@@ -7,8 +7,6 @@
 
 import re
 import time
-import threading
-import schedule
 from datetime import datetime, timedelta
 import pytz
 
@@ -139,7 +137,10 @@ def get_today_event_groups():
 def schedule_amplitude_recording(date: str, time_: str, group: list):
     """같은 날짜+시각에 몰린 발표들은 한 번만 기록 (발표 5분 전 / 발표 후 5분)
     group: 같은 시각에 겹치는 이벤트 리스트 (예: CPI 관련 6개 지표가 21:30에 동시 발표)
+    (로컬에서 계속 켜두는 main.py용 - threading.Timer로 예약. 클라우드에서는 미사용)
     """
+    import threading
+
     event_key = f"{date}_{time_}"
     if event_key in scheduled_events:
         return
@@ -231,7 +232,9 @@ def schedule_today_amplitude():
 
 
 def run_calendar_scheduler():
-    """경제발표 스케줄러 시작"""
+    """경제발표 스케줄러 시작 (로컬에서 계속 켜두는 main.py용. 클라우드에서는 미사용)"""
+    import schedule
+
     print("\n📅 경제발표 스케줄러 시작...")
 
     # 시작 시 즉시 오늘 스케줄 등록
