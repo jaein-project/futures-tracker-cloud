@@ -1,0 +1,47 @@
+name: 경제지표 xlsx 자동 처리
+
+on:
+  push:
+    paths:
+      - "incoming/**.xlsx"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # imported/ 로 파일 이동한 결과를 다시 커밋하기 위해 필요
+
+jobs:
+  process-excel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install -r requirements-excel.txt
+
+      - name: 구글 인증 토큰 복원
+        run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
+
+      - name: incoming 폴더의 xlsx 전부 처리
+        run: |
+          mkdir -p imported
+          shopt -s nullglob
+          for f in incoming/*.xlsx; do
+            echo "=== 처리 중: $f ==="
+            python gh_actions_import_excel.py "$f"
+            git mv "$f" "imported/$(basename "$f")"
+          done
+
+      - name: 처리 결과 커밋 & 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "xlsx 자동 처리: incoming → imported"
+            git push
+          else
+            echo "변경 사항 없음 (처리할 파일이 없었음)"
+          fi
