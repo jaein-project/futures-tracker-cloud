@@ -61,28 +61,32 @@ def is_correct_schedule_now(timing: str, tolerance_minutes: int = 20) -> bool:
 
 def main():
     if len(sys.argv) < 2:
-        print("사용법: python gh_actions_checkpoint.py [아시아마감전|유럽개장전|미장전|미장후]")
+        print("사용법: python gh_actions_checkpoint.py [아시아마감전|유럽개장전|미장전|미장후] [--force]")
         sys.exit(1)
 
     timing = sys.argv[1]
+    force = "--force" in sys.argv
 
     kst = pytz.timezone("Asia/Seoul")
     now = datetime.now(kst)
 
-    # 주말 스킵 (미장후는 토요일 새벽=금요일 밤 마감이라 예외)
-    if timing == "미장후":
-        if now.weekday() == 6:  # 일요일만 스킵
-            print(f"⏭️ [{timing}] 일요일이라 스킵")
+    if not force:
+        # 주말 스킵 (미장후는 토요일 새벽=금요일 밤 마감이라 예외)
+        if timing == "미장후":
+            if now.weekday() == 6:  # 일요일만 스킵
+                print(f"⏭️ [{timing}] 일요일이라 스킵")
+                return
+        else:
+            if now.weekday() >= 5:
+                print(f"⏭️ [{timing}] 주말이라 스킵")
+                return
+
+        # 서머/겨울 이중 스케줄 중 지금이 맞는 타이밍인지 확인
+        if not is_correct_schedule_now(timing):
+            print(f"⏭️ [{timing}] 지금은 이 체크포인트 실행 시각이 아님 (서머/겨울 스케줄 불일치) - 스킵")
             return
     else:
-        if now.weekday() >= 5:
-            print(f"⏭️ [{timing}] 주말이라 스킵")
-            return
-
-    # 서머/겨울 이중 스케줄 중 지금이 맞는 타이밍인지 확인
-    if not is_correct_schedule_now(timing):
-        print(f"⏭️ [{timing}] 지금은 이 체크포인트 실행 시각이 아님 (서머/겨울 스케줄 불일치) - 스킵")
-        return
+        print("⚠️ --force 모드: 시간/요일 체크 건너뛰고 강제 실행 (테스트용)")
 
     print(f"🚀 [{timing}] 데이터 수집 시작 - {now.strftime('%Y-%m-%d %H:%M:%S')} KST")
     data = get_all_symbols()
