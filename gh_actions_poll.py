@@ -133,8 +133,9 @@ def checkpoint_already_recorded(ws, date_str: str, target_dt: datetime) -> bool:
                 continue
             if row[1].strip() != date_str:
                 continue
-            if row[10].strip():
-                continue
+            note = row[10].strip()
+            if note and note.startswith("미국_"):
+                continue  # 경제발표 전용 행만 제외 (수동백필_체크포인트 행은 정규 기록으로 인정)
             m = _parse_korean_time_to_minutes(row[2].strip())
             if m is None:
                 continue
