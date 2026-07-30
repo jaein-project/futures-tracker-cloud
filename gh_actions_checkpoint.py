@@ -60,9 +60,10 @@ def get_target_dt(timing: str, now_kst: datetime):
     return now_kst.replace(hour=th, minute=tm, second=0, microsecond=0)
 
 
-def get_intraday_high_low(symbol: str, target_dt_kst: datetime, multiplier=None):
-    """당일 00:00 KST 부터 target_dt_kst 까지의 분봉 누적 고가/저가 (실행 시각과 무관하게 정확한 값)"""
-    day_start_kst = target_dt_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: datetime, multiplier=None):
+    """day_start_kst 부터 target_dt_kst 까지의 분봉 누적 고가/저가
+    (미장후는 day_start가 전날 자정이어야 하루 전체 세션이 반영됨)
+    """
     period1 = int(day_start_kst.astimezone(pytz.UTC).timestamp())
     period2 = int(target_dt_kst.astimezone(pytz.UTC).timestamp()) + 60
 
@@ -146,25 +147,33 @@ def main():
     force = "--force" in sys.argv
     now = datetime.now(KST)
 
+    target_dt = get_target_dt(timing, now)
+
+    # 자정을 넘겨서 지연 실행된 경우 보정:
+    # cron은 미래를 미리 당겨 실행하지 않으므로, 오늘 날짜 기준 목표 시각이
+    # 아직 안 왔는데 지금 실행되고 있다면 -> 사실은 "어제" 발생했어야 할 트리거가
+    # 자정을 넘겨서 늦게 실행되고 있는 것으로 해석
+    if not force and target_dt > now:
+        target_dt -= timedelta(days=1)
+
     if not force:
         if timing == "미장후":
-            if now.weekday() == 6:
+            if target_dt.weekday() == 6:
                 print(f"⏭️ [{timing}] 일요일이라 스킵")
                 return
         else:
-            if now.weekday() >= 5:
+            if target_dt.weekday() >= 5:
                 print(f"⏭️ [{timing}] 주말이라 스킵")
                 return
 
-    target_dt = get_target_dt(timing, now)
-
     if not force and now < target_dt:
-        print(f"⏭️ [{timing}] 아직 목표 시각({target_dt.strftime('%H:%M')})이 안 됨 - 스킵")
+        print(f"⏭️ [{timing}] 아직 목표 시각({target_dt.strftime('%Y-%m-%d %H:%M')})이 안 됨 - 스킵")
         return
 
-    # 시트 기록용 날짜 (미장후는 -1일)
+    # 시트 기록용 날짜 (미장후는 -1일) - 이 날짜의 자정부터 누적해야 하루 전체 세션이 반영됨
     record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
     date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
+    day_start = record_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
     client = get_client()
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
@@ -174,7 +183,7 @@ def main():
         print(f"⏭️ [{timing}] {date_str} 근처 이미 기록 있음 - 중복 스킵 (서머/겨울 이중 트리거 대응)")
         return
 
-    print(f"🚀 [{timing}] 목표 시각 {target_dt.strftime('%Y-%m-%d %H:%M')} KST 기준 데이터 역산 중...")
+    print(f"🚀 [{timing}] {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 누적 데이터 역산 중...")
 
     ampm = "오전" if target_dt.hour < 12 else "오후"
     h12 = target_dt.hour if target_dt.hour in (0, 12) else target_dt.hour % 12
@@ -186,7 +195,7 @@ def main():
     any_data = False
     for name in SYMBOL_ORDER:
         symbol, multiplier = SYMBOLS.get(name, (None, None))
-        hl = get_intraday_high_low(symbol, target_dt, multiplier) if symbol else None
+        hl = get_intraday_high_low(symbol, day_start, target_dt, multiplier) if symbol else None
         if hl:
             ticks = calc_ticks(name, hl["high"], hl["low"])
             row.append(ticks)
