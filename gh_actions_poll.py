@@ -123,66 +123,73 @@ def _parse_korean_time_to_minutes(s: str):
     return h * 60 + mi
 
 
-def checkpoint_already_recorded(ws, date_str: str, target_dt: datetime) -> bool:
-    """오늘 날짜 + 이 시간대 창에 이미 기록(비고 없는 정규 체크포인트)이 있는지 확인"""
+
+LOOKBACK_DAYS = 3  # 오늘 포함 최근 며칠치를 매번 재확인할지 (하루 전체가 통째로 안 돌았을 경우 대비)
+
+
+def checkpoint_already_recorded_cached(all_values, date_str: str, target_dt: datetime) -> bool:
+    """미리 읽어둔 all_values를 재사용 (매번 시트 새로 안 읽음)"""
     target_minutes = target_dt.hour * 60 + target_dt.minute
-    try:
-        all_values = ws.get_all_values()
-        for row in all_values[2:]:
-            if len(row) < 11:
-                continue
-            if row[1].strip() != date_str:
-                continue
-            note = row[10].strip()
-            if note and note.startswith("미국_"):
-                continue  # 경제발표 전용 행만 제외 (수동백필_체크포인트 행은 정규 기록으로 인정)
-            m = _parse_korean_time_to_minutes(row[2].strip())
-            if m is None:
-                continue
-            diff = min(abs(m - target_minutes), 1440 - abs(m - target_minutes))
-            if diff <= CHECK_WINDOW_MINUTES:
-                return True
-    except Exception as e:
-        print(f"   ⚠️ 중복 확인 오류(무시하고 계속): {e}")
+    for row in all_values[2:]:
+        if len(row) < 11:
+            continue
+        if row[1].strip() != date_str:
+            continue
+        note = row[10].strip()
+        if note and note.startswith("미국_"):
+            continue  # 경제발표 전용 행만 제외
+        m = _parse_korean_time_to_minutes(row[2].strip())
+        if m is None:
+            continue
+        diff = min(abs(m - target_minutes), 1440 - abs(m - target_minutes))
+        if diff <= CHECK_WINDOW_MINUTES:
+            return True
     return False
 
 
 def process_checkpoints(ws, now: datetime):
     sched = SUMMER_SCHEDULE if is_summer_time() else WINTER_SCHEDULE
 
-    for timing, hhmm in sched.items():
-        th, tm = map(int, hhmm.split(":"))
-        target_dt = now.replace(hour=th, minute=tm, second=0, microsecond=0)
+    try:
+        all_values = ws.get_all_values()
+    except Exception as e:
+        print(f"   ⚠️ 시트 읽기 오류: {e}")
+        return
 
-        # 자정을 넘겨 지연 처리되는 경우 보정
-        if target_dt > now:
-            target_dt -= timedelta(days=1)
+    for day_offset in range(LOOKBACK_DAYS + 1):  # 0=오늘, 1=어제, 2=그제, 3=그끄제
+        check_date = (now - timedelta(days=day_offset)).date()
 
-        if timing == "미장후":
-            if target_dt.weekday() == 6:
+        for timing, hhmm in sched.items():
+            th, tm = map(int, hhmm.split(":"))
+            target_dt = KST.localize(datetime(check_date.year, check_date.month, check_date.day, th, tm))
+
+            if timing == "미장후":
+                if target_dt.weekday() == 6:
+                    continue
+            else:
+                if target_dt.weekday() >= 5:
+                    continue
+
+            if now < target_dt:
+                continue  # 아직 미래 시각
+
+            record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
+            date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
+            day_start = record_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            if checkpoint_already_recorded_cached(all_values, date_str, target_dt):
                 continue
-        else:
-            if target_dt.weekday() >= 5:
-                continue
 
-        if now < target_dt:
-            continue  # 아직 목표 시각 안 됨
-
-        record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
-        date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
-        day_start = record_date.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        if checkpoint_already_recorded(ws, date_str, target_dt):
-            continue
-
-        print(f"🚀 [{timing}] {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 누적 데이터 역산 중...")
-        time_str = time_str_from(target_dt)
-        row, any_data = build_row(day_start, target_dt, date_str, time_str, "")
-        if any_data:
-            ws.append_row(row, value_input_option="USER_ENTERED")
-            print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
-        else:
-            print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
+            print(f"🚀 [{timing}] {date_str} 누락분 발견 - {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 역산 중...")
+            time_str = time_str_from(target_dt)
+            row, any_data = build_row(day_start, target_dt, date_str, time_str, "")
+            if any_data:
+                ws.append_row(row, value_input_option="USER_ENTERED")
+                print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
+                # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지되도록 갱신
+                all_values.append(row)
+            else:
+                print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
 
 
 def process_economic(ws, now: datetime):
