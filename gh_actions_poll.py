@@ -55,7 +55,9 @@ def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: d
         res = requests.get(url, headers=HEADERS, params=params, timeout=10)
         data = res.json()
         result = data["chart"]["result"][0]
-        timestamps = result["timestamp"]
+        timestamps = result.get("timestamp")
+        if not timestamps:
+            return None  # 휴장 등으로 데이터가 전혀 없는 구간
         quote = result["indicators"]["quote"][0]
 
         highs, lows = [], []
@@ -164,7 +166,8 @@ def process_checkpoints(ws, now: datetime):
             target_dt = KST.localize(datetime(check_date.year, check_date.month, check_date.day, th, tm))
 
             if timing == "미장후":
-                if target_dt.weekday() == 6:
+                record_date_check = target_dt - timedelta(days=1)
+                if record_date_check.weekday() >= 5:  # 토/일 세션은 존재하지 않음 (둘 다 스킵)
                     continue
             else:
                 if target_dt.weekday() >= 5:
