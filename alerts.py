@@ -75,7 +75,10 @@ def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
     )
 
 
-if __name__ == "__main__":
-    # 웹훅이 제대로 연결됐는지 테스트하는 용도
-    ok = send_slack_alert("테스트 메시지입니다. 이게 보이면 Slack 연결 성공!", title="✅ 연결 테스트")
-    print("전송 성공" if ok else "전송 실패 (SLACK_WEBHOOK_URL 확인해주세요)")
+def alert_duplicate_streak(name, value, streak):
+    """같은 값이 연속으로 여러 번 기록됐을 때 (월물 만기 임박/데이터 정체 의심)"""
+    send_slack_alert(
+        f"`{name}` 값이 {streak}번 연속 똑같이({value}) 기록되고 있어요. "
+        f"월물 만기가 다가와서 거래가 뜸해졌거나, 데이터 소스에 문제가 있을 수 있어요. 확인해주세요.",
+        title="🔁 진폭 값 반복 감지",
+    )
