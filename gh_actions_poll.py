@@ -233,4 +233,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        from alerts import alert_workflow_exception
+        alert_workflow_exception("gh_actions_poll.py", e)
+        raise
