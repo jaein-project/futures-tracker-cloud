@@ -22,4 +22,7 @@ jobs:
         run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
 
       - name: "체크포인트 + 경제발표 확인"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python gh_actions_poll.py
