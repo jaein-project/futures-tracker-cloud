@@ -48,7 +48,7 @@ CONTRACT_RULES = {
     "오일":     {"cycle": list(range(1, 13)),   "roll_days_before": 25, "expiry_rule": "n_days_before_month_start", "exchange": "NYM"},
     "천연가스": {"cycle": list(range(1, 13)),   "roll_days_before": 4,  "expiry_rule": "n_days_before_month_start", "exchange": "NYM"},
     "구리":     {"cycle": [3, 5, 7, 9, 12],     "roll_days_before": 5,  "expiry_rule": "n_days_before_month_start", "exchange": "CMX"},
-    "골드":     {"cycle": [2, 4, 6, 8, 10, 12], "roll_days_before": 5,  "expiry_rule": "n_days_before_month_start", "exchange": "CMX"},
+    "골드":     {"cycle": [2, 4, 6, 8, 12], "roll_days_before": 5,  "expiry_rule": "n_days_before_month_start", "exchange": "CMX"},
 }
 
 BASE_TICKER = {
