@@ -23,6 +23,29 @@ import os
 import requests
 
 WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"
+NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
+
+
+def send_ntfy_alert(message: str, title: str = None) -> bool:
+    """ntfy.sh 앱으로 실시간 폰 푸시 알림 전송 (Slack과 별도로 당분간 병행 사용).
+    NTFY_TOPIC 환경변수가 없으면 조용히 스킵합니다 (에러 아님).
+    """
+    topic = os.environ.get(NTFY_TOPIC_ENV_VAR)
+    if not topic:
+        return False
+    headers = {"Title": title.encode("utf-8")} if title else {}
+    try:
+        res = requests.post(f"https://ntfy.sh/{topic}", data=message.encode("utf-8"), headers=headers, timeout=10)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"❌ ntfy 전송 중 오류: {e}")
+        return False
+
+
+def send_alert(message: str, title: str = None):
+    """Slack + ntfy 둘 다로 전송 (둘 중 하나만 설정돼 있어도 동작)"""
+    send_slack_alert(message, title)
+    send_ntfy_alert(message, title)
 
 
 def send_slack_alert(message: str, title: str = None) -> bool:
@@ -51,7 +74,7 @@ def send_slack_alert(message: str, title: str = None) -> bool:
 
 def alert_symbol_missing(name: str, symbol: str):
     """특정 종목 데이터가 비어서(None) 왔을 때"""
-    send_slack_alert(
+    send_alert(
         f"`{name}` ({symbol}) 데이터를 못 가져왔어요. 월물 코드가 만기 지났거나, "
         f"Yahoo Finance 쪽 문제일 수 있어요. 확인해주세요.",
         title="⚠️ 진폭 데이터 누락",
@@ -60,7 +83,7 @@ def alert_symbol_missing(name: str, symbol: str):
 
 def alert_workflow_exception(context: str, error: Exception):
     """예외가 발생해서 워크플로우가 실패했을 때"""
-    send_slack_alert(
+    send_alert(
         f"`{context}` 실행 중 오류가 발생했어요:\n```{error}```",
         title="❌ 워크플로우 오류",
     )
@@ -68,7 +91,7 @@ def alert_workflow_exception(context: str, error: Exception):
 
 def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
     """월물이 자동으로 롤오버됐을 때 - 확인용 알림 (원치 않으면 호출 안 해도 됨)"""
-    send_slack_alert(
+    send_alert(
         f"`{name}` 월물이 자동으로 바뀌었어요: `{old_symbol}` → `{new_symbol}`\n"
         f"영웅문/하나 HTS와 한 번 비교해서 맞는지 확인해주세요.",
         title="🔄 월물 자동 롤오버",
@@ -77,7 +100,7 @@ def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
 
 def alert_duplicate_streak(name, value, streak):
     """같은 값이 연속으로 여러 번 기록됐을 때 (월물 만기 임박/데이터 정체 의심)"""
-    send_slack_alert(
+    send_alert(
         f"`{name}` 값이 {streak}번 연속 똑같이({value}) 기록되고 있어요. "
         f"월물 만기가 다가와서 거래가 뜸해졌거나, 데이터 소스에 문제가 있을 수 있어요. 확인해주세요.",
         title="🔁 진폭 값 반복 감지",
