@@ -94,6 +94,28 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
     row.append(note)
     return row, any_data
 
+def format_ticks_detail(row, prev_row=None):
+    """종목별 진폭(틱) 값 + 직전 기록 대비 증감을 정리해서 Slack 알림용 문자열로 반환.
+    row: build_row()가 만든 로컬 행 [date_str, time_str, tick*7, note] (인덱스 밀림 없음)
+    prev_row: ws.get_all_values()로 읽은 원본 시트 행 (A열이 빈칸이라 인덱스가 1칸 밀려있음)
+    """
+    lines = []
+    for idx, name in enumerate(SYMBOL_ORDER):
+        val = row[2 + idx]
+        if val == "" or val is None:
+            lines.append(f"{name} 데이터없음")
+            continue
+        line = f"{name} {val}틱"
+        if prev_row is not None and len(prev_row) > 3 + idx:
+            prev_val = prev_row[3 + idx]
+            try:
+                diff = int(val) - int(prev_val)
+                line += f" ({diff:+d})"
+            except (ValueError, TypeError):
+                pass
+        lines.append(line)
+    return "\n".join(lines)
+
 def time_str_from(target_dt: datetime) -> str:
     ampm = "오전" if target_dt.hour < 12 else "오후"
     h12 = target_dt.hour if target_dt.hour in (0, 12) else target_dt.hour % 12
@@ -190,7 +212,9 @@ def process_checkpoints(ws, now: datetime):
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
                 from alerts import alert_checkpoint_recorded
-                alert_checkpoint_recorded(date_str, time_str, timing)
+                prev_row = all_values[-1] if len(all_values) > 2 else None
+                detail = format_ticks_detail(row, prev_row)
+                alert_checkpoint_recorded(date_str, time_str, timing, detail)
                 # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지되도록 갱신
                 all_values.append(row)
             else:
@@ -216,7 +240,23 @@ def process_economic(ws, now: datetime):
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ 경제발표 기록 완료: {date_str} {note}")
                 from alerts import alert_economic_recorded
-                alert_economic_recorded(date_str, note, g.get("names"))
+                try:
+                    all_values = ws.get_all_values()
+                except Exception as e:
+                    print(f"   ⚠️ 비교용 시트 읽기 오류: {e}")
+                    all_values = []
+                prev_row = None
+                if note == g["label_post"]:
+                    # "후"는 같은 발표의 "전" 기록과 비교 (발표로 인한 변동폭)
+                    for r in reversed(all_values[2:]):
+                        if len(r) >= 11 and r[1].strip() == date_str and r[10].strip() == g["label_pre"]:
+                            prev_row = r
+                            break
+                elif len(all_values) > 3:
+                    # "전"/"10분전"은 방금 추가되기 전 마지막 기록과 비교
+                    prev_row = all_values[-2]
+                detail = format_ticks_detail(row, prev_row)
+                alert_economic_recorded(date_str, note, g.get("names"), detail)
             else:
                 print(f"   ❌ 경제발표 전 종목 데이터 없음 - 기록 취소")
 
