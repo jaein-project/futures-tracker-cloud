@@ -105,3 +105,12 @@ def alert_duplicate_streak(name, value, streak):
         f"월물 만기가 다가와서 거래가 뜸해졌거나, 데이터 소스에 문제가 있을 수 있어요. 확인해주세요.",
         title="🔁 진폭 값 반복 감지",
     )
+
+
+def alert_economic_recorded(date_str: str, note: str, names: list = None):
+    """경제발표(전/후) 진폭이 시트에 기록됐을 때 실시간 알림"""
+    name_str = ", ".join(names) if names else ""
+    send_alert(
+        f"`{date_str}` `{note}` 진폭이 기록됐어요." + (f"\n대상 지표: {name_str}" if name_str else ""),
+        title="📢 경제발표 진폭 기록",
+    )
