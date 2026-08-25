@@ -70,14 +70,26 @@ def send_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_E
     return slack_ok or ntfy_ok
 
 
+# 채널별 발신 이름/아이콘 (2026-08-26 신규) - Slack 워크스페이스의 webhook 앱 설정과 무관하게
+# 메시지 payload에서 채널마다 다르게 표시되도록 지정. 워크스페이스에서 "앱 이름/아이콘 커스터마이징 제한"이
+# 켜져 있으면 무시되고 webhook 앱 기본 이름/아이콘으로 표시될 수 있음.
+CHANNEL_DISPLAY = {
+    WEBHOOK_ENV_VAR: ("이상감지봇", ":warning:"),           # #trading-notify
+    WEBHOOK_ECONOMIC_ENV_VAR: ("경제발표알리미", ":calendar:"),  # #economic-presentation
+    WEBHOOK_TRACKER_ENV_VAR: ("진폭알리미", ":bar_chart:"),      # #futures-tracker
+}
+
+
 def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR) -> bool:
     """Slack으로 알림 메시지 전송. 지정한 webhook_env_var가 없으면 기본(SLACK_WEBHOOK_URL)으로
     자동 대체하고, 그것도 없으면 콘솔에만 출력.
     반환값: 실제로 Slack 전송에 성공했으면 True
     """
     webhook_url = _first_line(os.environ.get(webhook_env_var))
+    actual_env_var = webhook_env_var
     if not webhook_url and webhook_env_var != WEBHOOK_ENV_VAR:
         webhook_url = _first_line(os.environ.get(WEBHOOK_ENV_VAR))
+        actual_env_var = WEBHOOK_ENV_VAR  # 폴백된 경우 실제로는 #trading-notify로 전송됨
 
     text = f"*{title}*\n{message}" if title else message
 
@@ -87,8 +99,12 @@ def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEB
         return False
 
     print(f"🔍 webhook_url({webhook_env_var}) 진단: 길이={len(webhook_url)}자, https로 시작={webhook_url.startswith('https://')}")
+    payload = {"text": text}
+    display = CHANNEL_DISPLAY.get(actual_env_var)
+    if display:
+        payload["username"], payload["icon_emoji"] = display
     try:
-        res = requests.post(webhook_url, json={"text": text}, timeout=10)
+        res = requests.post(webhook_url, json=payload, timeout=10)
         if res.status_code == 200:
             return True
         print(f"❌ Slack 전송 실패 (status={res.status_code}): {res.text}")
