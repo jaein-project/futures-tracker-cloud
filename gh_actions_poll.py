@@ -95,9 +95,10 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
     return row, any_data
 
 def format_ticks_detail(row, prev_row=None):
-    """종목별 진폭(틱) 값 + 직전 기록 대비 증감을 정리해서 Slack 알림용 문자열로 반환.
+    """종목별 진폭 값 + 직전 기록 대비 증감(화살표)을 정리해서 Slack 알림용 문자열로 반환.
     row: build_row()가 만든 로컬 행 [date_str, time_str, tick*7, note] (인덱스 밀림 없음)
     prev_row: ws.get_all_values()로 읽은 원본 시트 행 (A열이 빈칸이라 인덱스가 1칸 밀려있음)
+    prev_row가 None이면(거래일 경계 등 비교 대상 없음) 값만 표시함.
     """
     lines = []
     for idx, name in enumerate(SYMBOL_ORDER):
@@ -105,12 +106,17 @@ def format_ticks_detail(row, prev_row=None):
         if val == "" or val is None:
             lines.append(f"{name} 데이터없음")
             continue
-        line = f"{name} {val}틱"
+        line = f"{name} {val}"
         if prev_row is not None and len(prev_row) > 3 + idx:
             prev_val = prev_row[3 + idx]
             try:
                 diff = int(val) - int(prev_val)
-                line += f" ({diff:+d})"
+                if diff > 0:
+                    line += f" (▲{diff})"
+                elif diff < 0:
+                    line += f" (▼{abs(diff)})"
+                else:
+                    line += " ( - )"
             except (ValueError, TypeError):
                 pass
         lines.append(line)
@@ -216,7 +222,8 @@ def process_checkpoints(ws, now: datetime):
                 if prev_row is not None and len(prev_row) > 1 and prev_row[1].strip() != date_str:
                     prev_row = None  # 거래일이 바뀌는 경계(예: 오늘 아시아마감전 vs 전일 미장후)는 비교 대상에서 제외
                 detail = format_ticks_detail(row, prev_row)
-                alert_checkpoint_recorded(date_str, time_str, timing, detail)
+                time_hhmm = target_dt.strftime("%H:%M")
+                alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
                 # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지되도록 갱신
                 all_values.append(row)
             else:
@@ -260,7 +267,9 @@ def process_economic(ws, now: datetime):
                     if len(candidate) > 1 and candidate[1].strip() == date_str:
                         prev_row = candidate
                 detail = format_ticks_detail(row, prev_row)
-                alert_economic_recorded(date_str, note, g.get("names"), detail)
+                alert_time_hhmm = target_dt.strftime("%H:%M")
+                alert_economic_recorded(date_str, note, g.get("names"), detail,
+                                         event_time=g["time"], alert_time=alert_time_hhmm)
             else:
                 print(f"   ❌ 경제발표 전 종목 데이터 없음 - 기록 취소")
 
