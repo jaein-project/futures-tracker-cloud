@@ -1,7 +1,7 @@
 """
 경제발표 자동화 모듈
 - 경제발표 구글 시트에서 오늘 중요 지표 읽기
-- 신규실업수당 / 비농(금요일) / 기준금리·금리결정 / CPI / PCE / PPI / ISM PMI / 소매판매 해당하면
+- 신규실업수당 / 비농(금요일) / 기준금리·금리결정 / CPI / PCE / PPI / ISM PMI / 소매판매 / FOMC / 파월 연설 해당하면
 - 발표 10분 전 / 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록
 """
 
@@ -38,6 +38,10 @@ def is_amplitude_target(name: str, weekday: str) -> bool:
     if "ISM" in name:
         return True
     if "소매판매" in name or "Retail Sales" in name:
+        return True
+    if "FOMC" in name:
+        return True
+    if "파월" in name or "Powell" in name:
         return True
     return False
 
