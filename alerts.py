@@ -27,8 +27,8 @@ NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
 
 
 def _first_line(value: str) -> str:
-    """환경변수 값에 줄바꿈이 섞여 들어간 경우(예: URL이 중복 저장됨) 방어용 - 첫 줄만 사용"""
-    value = (value or "").strip()
+    """환경변수 값에 줄바꿈/보이지 않는 문자가 섞여 들어간 경우 방어용 - 첫 줄만 정리해서 사용"""
+    value = (value or "").strip().lstrip("\ufeff\u200b")
     return value.splitlines()[0].strip() if value else ""
 
 
@@ -67,6 +67,7 @@ def send_slack_alert(message: str, title: str = None) -> bool:
         print(text)
         return False
 
+    print(f"🔍 webhook_url 진단: 길이={len(webhook_url)}자, https로 시작={webhook_url.startswith('https://')}")
     try:
         res = requests.post(webhook_url, json={"text": text}, timeout=10)
         if res.status_code == 200:
