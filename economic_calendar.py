@@ -1,7 +1,7 @@
 """
 경제발표 자동화 모듈
 - 경제발표 구글 시트에서 오늘 중요 지표 읽기
-- 신규실업수당 / 비농(금요일) / 기준금리·금리결정 해당하면
+- 신규실업수당 / 비농(금요일) / 기준금리·금리결정 / CPI / PCE / PPI / ISM PMI / 소매판매 해당하면
 - 발표 10분 전 / 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록
 """
 
@@ -21,7 +21,8 @@ scheduled_events = set()
 
 
 def is_amplitude_target(name: str, weekday: str) -> bool:
-    """진폭 기록 대상 지표 여부 (조건부 서식 기준)"""
+    """진폭 기록 대상 지표 여부 (조건부 서식 기준)
+    - 차트가 크게 흔들릴 만한 발표 위주로 선정 (2026-08-25 확장)"""
     if "신규 실업수당" in name or "신규실업수당" in name:
         return True
     if weekday == "금" and "비농" in name:
@@ -29,6 +30,14 @@ def is_amplitude_target(name: str, weekday: str) -> bool:
     if re.search(r"기준금리|금리결정", name):
         return True
     if "CPI" in name or "소비자물가" in name:
+        return True
+    if "PCE" in name or "개인소비지출" in name:
+        return True
+    if "PPI" in name or "생산자물가" in name:
+        return True
+    if "ISM" in name:
+        return True
+    if "소매판매" in name or "Retail Sales" in name:
         return True
     return False
 
