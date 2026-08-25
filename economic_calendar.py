@@ -2,7 +2,7 @@
 경제발표 자동화 모듈
 - 경제발표 구글 시트에서 오늘 중요 지표 읽기
 - 신규실업수당 / 비농(금요일) / 기준금리·금리결정 해당하면
-- 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록
+- 발표 10분 전 / 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록
 """
 
 import re
@@ -125,8 +125,10 @@ def get_today_event_groups():
             "date": date,
             "time": time_hm,
             "names": names,
+            "label_reminder": f"미국_{short_label}_10분전",
             "label_pre": f"미국_{short_label}_전",
             "label_post": f"미국_{short_label}_후",
+            "reminder_dt": event_dt - timedelta(minutes=10),
             "before_dt": event_dt - timedelta(minutes=5),
             "after_dt": event_dt + timedelta(minutes=5),
         })
