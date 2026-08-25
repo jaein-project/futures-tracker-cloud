@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "실행 모드 (test: 웹훅 테스트 메시지 / snapshot: 지금 기준 실시간 진폭 발송)"
+        description: "실행 모드 (test: 웹훅 테스트 메시지 / snapshot: 지금 기준 실시간 진폭 발송 / preview: 체크포인트·경제발표 알림 문구 미리보기)"
         required: false
         default: "test"
         type: choice
         options:
           - test
           - snapshot
+          - preview
       message:
         description: "테스트 메시지 (mode=test일 때만 사용)"
         required: false
@@ -101,4 +102,62 @@ jobs:
           print(message)
           ok = send_alert(message, title=f"📊 {date_str} 진폭 확인", webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
           print(f"전송 결과: {'성공' if ok else '실패'}")
+          PY
+      - name: "체크포인트/경제발표 알림 문구 미리보기 전송"
+        if: ${{ inputs.mode == 'preview' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL_ECONOMIC: ${{ secrets.SLACK_WEBHOOK_URL_ECONOMIC }}
+          SLACK_WEBHOOK_URL_TRACKER: ${{ secrets.SLACK_WEBHOOK_URL_TRACKER }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          import gh_actions_poll as gp
+          from alerts import alert_checkpoint_recorded, alert_economic_recorded
+
+          # 지금 이 순간의 실제 진폭 값을 라이브로 조회 (실제 운영 코드와 동일한 함수 사용)
+          now = datetime.now(gp.KST)
+          day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+          date_str = f"{now.year}. {now.month}. {now.day}."
+          time_hhmm = now.strftime("%H:%M")
+
+          row = [date_str, time_hhmm]
+          for name in gp.SYMBOL_ORDER:
+              symbol, multiplier = gp.SYMBOLS.get(name, (None, None))
+              hl = gp.get_intraday_high_low(symbol, day_start, now, multiplier) if symbol else None
+              row.append(gp.calc_ticks(name, hl["high"], hl["low"]) if hl else "")
+          row.append("")
+
+          # 값만 표시(비교 없음) 버전
+          detail_no_prev = gp.format_ticks_detail(row, None)
+
+          # 화살표(직전 대비 증감) 버전 - 미리보기용으로 직전 값을 살짝 낮게 가정한 가짜 prev_row 사용
+          fake_prev_values = []
+          for idx, val in enumerate(row[2:9]):
+              if val == "":
+                  fake_prev_values.append("")
+              else:
+                  fake_prev_values.append(val if idx == 2 else max(val - (idx + 1), 0))
+          prev_row = ["", date_str, time_hhmm] + fake_prev_values
+          detail_with_prev = gp.format_ticks_detail(row, prev_row)
+
+          print("=== 체크포인트 미리보기 (값만 표시) ===")
+          print(detail_no_prev)
+          alert_checkpoint_recorded(date_str, time_hhmm, "아시아마감전(미리보기)", detail_no_prev)
+
+          print("=== 체크포인트 미리보기 (직전 대비 화살표) ===")
+          print(detail_with_prev)
+          alert_checkpoint_recorded(date_str, time_hhmm, "유럽개장전(미리보기)", detail_with_prev)
+
+          print("=== 경제발표 미리보기 (10분전) ===")
+          alert_economic_recorded(date_str, "테스트발표_10분전", ["테스트 발표(미리보기)"], detail_with_prev, event_time=time_hhmm)
+
+          print("=== 경제발표 미리보기 (전) ===")
+          alert_economic_recorded(date_str, "테스트발표_전", ["테스트 발표(미리보기)"], detail_no_prev, alert_time=time_hhmm)
+
+          print("=== 경제발표 미리보기 (후) ===")
+          alert_economic_recorded(date_str, "테스트발표_후", ["테스트 발표(미리보기)"], detail_with_prev, alert_time=time_hhmm)
+
+          print("전송 완료 (각 메시지의 성공/실패는 위 콘솔 진단 로그 참고)")
           PY
