@@ -26,11 +26,17 @@ WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"
 NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
 
 
+def _first_line(value: str) -> str:
+    """환경변수 값에 줄바꿈이 섞여 들어간 경우(예: URL이 중복 저장됨) 방어용 - 첫 줄만 사용"""
+    value = (value or "").strip()
+    return value.splitlines()[0].strip() if value else ""
+
+
 def send_ntfy_alert(message: str, title: str = None) -> bool:
     """ntfy.sh 앱으로 실시간 폰 푸시 알림 전송 (Slack과 별도로 당분간 병행 사용).
     NTFY_TOPIC 환경변수가 없으면 조용히 스킵합니다 (에러 아님).
     """
-    topic = (os.environ.get(NTFY_TOPIC_ENV_VAR) or "").strip()
+    topic = _first_line(os.environ.get(NTFY_TOPIC_ENV_VAR))
     if not topic:
         return False
     headers = {"Title": title.encode("utf-8")} if title else {}
@@ -52,7 +58,7 @@ def send_slack_alert(message: str, title: str = None) -> bool:
     """Slack으로 알림 메시지 전송. 웹훅 URL이 설정 안 돼있으면 콘솔에만 출력.
     반환값: 실제로 Slack 전송에 성공했으면 True
     """
-    webhook_url = (os.environ.get(WEBHOOK_ENV_VAR) or "").strip()
+    webhook_url = _first_line(os.environ.get(WEBHOOK_ENV_VAR))
 
     text = f"*{title}*\n{message}" if title else message
 
