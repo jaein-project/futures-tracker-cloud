@@ -28,6 +28,8 @@ SCOPES = [
 
 SYMBOL_ORDER = ["나스닥", "오일", "골드", "천연가스", "구리", "유로", "엔화"]
 
+REMINDER_LOG_SHEET = "알림기록"  # 시트에 값을 기록하지 않는 순수 알림(예고/비교)의 중복 방지용 로그 탭
+
 TICK_SIZE = {
     "나스닥":   1,
     "오일":     0.01,
@@ -78,6 +80,40 @@ def is_duplicate(ws, date_str, note):
     except:
         pass
     return False
+
+
+def _get_or_create_reminder_log_ws(spreadsheet):
+    """'알림기록' 탭이 없으면 새로 만들어서 반환 (순수 알림 중복 방지용 - 진폭 시트는 건드리지 않음)"""
+    try:
+        return spreadsheet.worksheet(REMINDER_LOG_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=REMINDER_LOG_SHEET, rows=2000, cols=3)
+        ws.append_row(["날짜", "라벨", "전송시각"], value_input_option="USER_ENTERED")
+        return ws
+
+
+def is_reminder_sent(spreadsheet, date_str, label) -> bool:
+    """순수 알림(경제발표 예고/전후비교/일일다이제스트 등, 진폭 시트에 값을 안 남기는 알림)이
+    이미 전송됐는지 확인 - '알림기록' 탭에서 조회"""
+    try:
+        ws = _get_or_create_reminder_log_ws(spreadsheet)
+        all_values = ws.get_all_values()
+        for row in all_values[1:]:
+            if len(row) >= 2 and row[0] == date_str and row[1] == label:
+                return True
+    except Exception as e:
+        print(f"   ⚠️ 알림기록 시트 확인 오류: {e}")
+    return False
+
+
+def mark_reminder_sent(spreadsheet, date_str, label):
+    """순수 알림을 보냈다는 사실을 '알림기록' 탭에 남겨서 다음 폴링에서 중복 전송되지 않게 함"""
+    try:
+        ws = _get_or_create_reminder_log_ws(spreadsheet)
+        now_str = datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
+        ws.append_row([date_str, label, now_str], value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"   ⚠️ 알림기록 시트 기록 오류: {e}")
 
 
 def _record_data_inner(data: dict, timing: str, note: str = ""):
