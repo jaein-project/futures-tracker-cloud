@@ -3,12 +3,20 @@ name: "알림 테스트 (수동 실행)"
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "실행 모드 (test: 웹훅 테스트 메시지 / snapshot: 지금 기준 실시간 진폭 발송)"
+        required: false
+        default: "test"
+        type: choice
+        options:
+          - test
+          - snapshot
       message:
-        description: "테스트 메시지"
+        description: "테스트 메시지 (mode=test일 때만 사용)"
         required: false
         default: "진폭 알림 시스템 테스트입니다."
       channel:
-        description: "테스트할 채널"
+        description: "테스트할 채널 (mode=test일 때만 사용)"
         required: false
         default: "all"
         type: choice
@@ -23,15 +31,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: "패키지 설치"
-        run: pip install requests
-
+        run: pip install -r requirements-cloud.txt
       - name: "테스트 알림 전송"
+        if: ${{ inputs.mode == 'test' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_WEBHOOK_URL_ECONOMIC: ${{ secrets.SLACK_WEBHOOK_URL_ECONOMIC }}
@@ -58,4 +64,41 @@ jobs:
           for key, (label, env_var) in to_test:
               ok = send_slack_alert(f"[{label}] {message}", title="🧪 채널 테스트", webhook_env_var=env_var)
               print(f"{label}: {'성공' if ok else '실패'}")
+          PY
+      - name: "지금 기준 진폭 스냅샷 전송"
+        if: ${{ inputs.mode == 'snapshot' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL_ECONOMIC: ${{ secrets.SLACK_WEBHOOK_URL_ECONOMIC }}
+          SLACK_WEBHOOK_URL_TRACKER: ${{ secrets.SLACK_WEBHOOK_URL_TRACKER }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          import gh_actions_poll as gp
+          from alerts import send_alert, WEBHOOK_TRACKER_ENV_VAR
+
+          now = datetime.now(gp.KST)
+          day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+          date_str = f"{now.year}. {now.month}. {now.day}."
+          time_hhmm = now.strftime("%H:%M")
+
+          row = [date_str, time_hhmm]
+          for name in gp.SYMBOL_ORDER:
+              symbol, multiplier = gp.SYMBOLS.get(name, (None, None))
+              hl = gp.get_intraday_high_low(symbol, day_start, now, multiplier) if symbol else None
+              if hl:
+                  ticks = gp.calc_ticks(name, hl["high"], hl["low"])
+                  row.append(ticks)
+                  print(f"[{name}] 고:{hl['high']} 저:{hl['low']} -> {ticks}")
+              else:
+                  row.append("")
+                  print(f"[{name}] 데이터 없음")
+          row.append("")
+
+          detail = gp.format_ticks_detail(row, None)
+          message = f"📊 지금 기준({time_hhmm}) 진폭이에요! ({date_str})\n{detail}"
+          print(message)
+          ok = send_alert(message, title="📊 진폭 확인", webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
+          print(f"전송 결과: {'성공' if ok else '실패'}")
           PY
