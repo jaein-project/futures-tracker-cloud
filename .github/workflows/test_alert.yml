@@ -97,8 +97,8 @@ jobs:
           row.append("")
 
           detail = gp.format_ticks_detail(row, None)
-          message = f"📊 지금 기준({time_hhmm}) 진폭이에요! ({date_str})\n{detail}"
+          message = f"지금 시간 기준(⏰{time_hhmm}) 진폭이에요 !\n{detail}"
           print(message)
-          ok = send_alert(message, title="📊 진폭 확인", webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
+          ok = send_alert(message, title=f"📊 {date_str} 진폭 확인", webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
           print(f"전송 결과: {'성공' if ok else '실패'}")
           PY
