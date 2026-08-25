@@ -6,13 +6,22 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 비어있거나(None) 월물 자동계산 결과가 이상해 보이는 경우가 있을 수 있습니다.
 그런 "조용한 실패"를 잡아서 Slack으로 알려주는 역할을 합니다.
 
+채널별로 다른 웹훅을 쓸 수 있습니다 (Slack 웹훅은 1개 = 1채널 고정):
+  - SLACK_WEBHOOK_URL           → #trading-notify (문제/에러 알림 전용)
+  - SLACK_WEBHOOK_URL_ECONOMIC  → #economic-presentation (경제발표 10분전 예고)
+  - SLACK_WEBHOOK_URL_TRACKER   → #futures-tracker (진폭 실제 기록 알림)
+
 사용 전 준비:
-  1) Slack에서 Incoming Webhook URL 발급 (설정 방법은 별도 안내 참고)
+  1) Slack 앱의 Incoming Webhooks 페이지에서 채널별로 "Add New Webhook to
+     Workspace"를 눌러 웹훅 URL을 각각 발급
   2) GitHub 저장소 Settings > Secrets and variables > Actions 에
-     이름 SLACK_WEBHOOK_URL 로 등록
-  3) 워크플로우 yml에서 해당 시크릿을 환경변수로 넘겨주기:
+     위 3개 이름으로 각각 등록 (SLACK_WEBHOOK_URL_ECONOMIC, _TRACKER 는 선택사항 -
+     없으면 해당 알림은 SLACK_WEBHOOK_URL 채널로 대신 전송됨)
+  3) 워크플로우 yml에서 해당 시크릿들을 환경변수로 넘겨주기:
        env:
          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+         SLACK_WEBHOOK_URL_ECONOMIC: ${{ secrets.SLACK_WEBHOOK_URL_ECONOMIC }}
+         SLACK_WEBHOOK_URL_TRACKER: ${{ secrets.SLACK_WEBHOOK_URL_TRACKER }}
 
 로컬(내 컴퓨터)에서 테스트할 때는 터미널에서:
     export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
@@ -22,7 +31,9 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 import os
 import requests
 
-WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"
+WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"                    # #trading-notify (문제/에러)
+WEBHOOK_ECONOMIC_ENV_VAR = "SLACK_WEBHOOK_URL_ECONOMIC"   # #economic-presentation (경제발표 예고)
+WEBHOOK_TRACKER_ENV_VAR = "SLACK_WEBHOOK_URL_TRACKER"     # #futures-tracker (진폭 기록)
 NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
 
 
@@ -48,26 +59,30 @@ def send_ntfy_alert(message: str, title: str = None) -> bool:
         return False
 
 
-def send_alert(message: str, title: str = None):
-    """Slack + ntfy 둘 다로 전송 (둘 중 하나만 설정돼 있어도 동작)"""
-    send_slack_alert(message, title)
+def send_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR):
+    """Slack + ntfy 둘 다로 전송 (둘 중 하나만 설정돼 있어도 동작)
+    webhook_env_var로 어느 채널용 웹훅을 쓸지 지정 가능 (기본: #trading-notify)"""
+    send_slack_alert(message, title, webhook_env_var)
     send_ntfy_alert(message, title)
 
 
-def send_slack_alert(message: str, title: str = None) -> bool:
-    """Slack으로 알림 메시지 전송. 웹훅 URL이 설정 안 돼있으면 콘솔에만 출력.
+def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR) -> bool:
+    """Slack으로 알림 메시지 전송. 지정한 webhook_env_var가 없으면 기본(SLACK_WEBHOOK_URL)으로
+    자동 대체하고, 그것도 없으면 콘솔에만 출력.
     반환값: 실제로 Slack 전송에 성공했으면 True
     """
-    webhook_url = _first_line(os.environ.get(WEBHOOK_ENV_VAR))
+    webhook_url = _first_line(os.environ.get(webhook_env_var))
+    if not webhook_url and webhook_env_var != WEBHOOK_ENV_VAR:
+        webhook_url = _first_line(os.environ.get(WEBHOOK_ENV_VAR))
 
     text = f"*{title}*\n{message}" if title else message
 
     if not webhook_url:
-        print(f"⚠️ [{WEBHOOK_ENV_VAR}] 환경변수가 없어서 Slack 대신 콘솔에만 출력합니다:")
+        print(f"⚠️ [{webhook_env_var}] 환경변수가 없어서 Slack 대신 콘솔에만 출력합니다:")
         print(text)
         return False
 
-    print(f"🔍 webhook_url 진단: 길이={len(webhook_url)}자, https로 시작={webhook_url.startswith('https://')}")
+    print(f"🔍 webhook_url({webhook_env_var}) 진단: 길이={len(webhook_url)}자, https로 시작={webhook_url.startswith('https://')}")
     try:
         res = requests.post(webhook_url, json={"text": text}, timeout=10)
         if res.status_code == 200:
@@ -115,9 +130,29 @@ def alert_duplicate_streak(name, value, streak):
 
 
 def alert_economic_recorded(date_str: str, note: str, names: list = None):
-    """경제발표(전/후) 진폭이 시트에 기록됐을 때 실시간 알림"""
+    """경제발표 진폭이 시트에 기록됐을 때 실시간 알림.
+    '10분전' 라벨은 #economic-presentation(예고)으로, '전'/'후' 라벨은
+    #futures-tracker(실제 기록)로 채널을 나눠서 전송함."""
     name_str = ", ".join(names) if names else ""
+    detail = f"\n대상 지표: {name_str}" if name_str else ""
+    if note.endswith("_10분전"):
+        send_alert(
+            f"`{date_str}` `{note}` 10분 뒤 경제발표가 있어요." + detail,
+            title="📢 경제발표 예고",
+            webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+        )
+    else:
+        send_alert(
+            f"`{date_str}` `{note}` 진폭이 기록됐어요." + detail,
+            title="📊 진폭 기록",
+            webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+        )
+
+
+def alert_checkpoint_recorded(date_str: str, time_str: str, timing: str):
+    """정기 체크포인트(아시아마감전 등) 진폭이 시트에 기록됐을 때 실시간 알림"""
     send_alert(
-        f"`{date_str}` `{note}` 진폭이 기록됐어요." + (f"\n대상 지표: {name_str}" if name_str else ""),
-        title="📢 경제발표 진폭 기록",
+        f"`{date_str} {time_str}` [{timing}] 진폭이 기록됐어요.",
+        title="📊 진폭 기록",
+        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
     )
