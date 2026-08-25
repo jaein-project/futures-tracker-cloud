@@ -5,6 +5,12 @@ GitHub Actions 전용 통합 스크립트 - 5분마다 실행
   그때그때 Yahoo Finance 분봉 데이터로 정확한 값을 역산해서 채움
 기존에 특정 cron 시각(예: 22:25)에만 의존하던 방식은 GitHub 무료 스케줄의 지연/누락에 취약해서,
 5분마다 계속 폴링하며 "놓친 게 있으면 바로 잡는" 방식으로 통합함.
+
+2026-08-26 추가:
+- 중요 경제발표 임박 예고 (10분전/5분전/1분전) - 시트에 기록하지 않는 순수 알림 (#economic-presentation)
+- 발표 20분 후 전/후 진폭 비교 알림 - 역시 순수 알림 (#economic-presentation)
+- 매일 낮 3시 오늘의 경제발표 전체(중요도 필터 없음) 다이제스트 - 역시 순수 알림 (#economic-presentation)
+  이 3가지는 진폭 시트가 아니라 별도 '알림기록' 탭(google_sheet.py)에 중복 방지 기록을 남김
 """
 import re
 import requests
@@ -122,6 +128,32 @@ def format_ticks_detail(row, prev_row=None):
         lines.append(line)
     return "\n".join(lines)
 
+def format_ticks_comparison(before_row, after_row):
+    """경제발표 20분 후 비교용: '{종목} {전값} > {후값} (증감)' 형태로 정리.
+    before_row: ws.get_all_values()에서 읽은 '전(-5분)' 원본 행 (A열 빈칸 → 인덱스 1칸 밀림)
+    after_row: build_row()로 방금 새로 계산한 로컬 행 (인덱스 밀림 없음)
+    """
+    lines = []
+    for idx, name in enumerate(SYMBOL_ORDER):
+        before_val = before_row[3 + idx] if len(before_row) > 3 + idx else ""
+        after_val = after_row[2 + idx]
+        if before_val in ("", None) or after_val in ("", None):
+            lines.append(f"{name} 데이터없음")
+            continue
+        try:
+            b, a = int(before_val), int(after_val)
+            diff = a - b
+            if diff > 0:
+                arrow = f"(▲{diff})"
+            elif diff < 0:
+                arrow = f"(▼{abs(diff)})"
+            else:
+                arrow = "( - )"
+            lines.append(f"{name} {b} > {a} {arrow}")
+        except (ValueError, TypeError):
+            lines.append(f"{name} {before_val} > {after_val}")
+    return "\n".join(lines)
+
 def time_str_from(target_dt: datetime) -> str:
     ampm = "오전" if target_dt.hour < 12 else "오후"
     h12 = target_dt.hour if target_dt.hour in (0, 12) else target_dt.hour % 12
@@ -161,9 +193,10 @@ def checkpoint_already_recorded_cached(all_values, date_str: str, target_dt: dat
             return True
     return False
 
-def check_duplicate_streak(all_values, new_row, threshold=2):
+def check_duplicate_streak(all_values, new_row, threshold=3):
     """같은 값이 threshold번 이상 연속으로 기록되면 Slack 알림
     (경제발표/백필처럼 비고가 있는 행은 스트릭 계산에서 제외)
+    2번 정도는 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 (2026-08-26 기준 변경)
     """
     from alerts import alert_duplicate_streak
     for idx, name in enumerate(SYMBOL_ORDER):
@@ -236,7 +269,9 @@ def process_economic(ws, now: datetime):
     for g in groups:
         d = datetime.strptime(g["date"], "%Y/%m/%d")
         date_str = f"{d.year}. {d.month}. {d.day}"
-        for target_dt, note in [(g["reminder_dt"], g["label_reminder"]), (g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
+
+        # 실제 진폭 기록 (발표 전 5분 / 발표 후 5분) - 시트에 기록 + #futures-tracker 알림
+        for target_dt, note in [(g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
             if now < target_dt:
                 continue
             if is_duplicate(ws, date_str, note):
@@ -262,16 +297,109 @@ def process_economic(ws, now: datetime):
                             prev_row = r
                             break
                 elif len(all_values) > 3:
-                    # "전"/"10분전"은 방금 추가되기 전 마지막 기록과 비교 (단, 날짜가 다르면 비교 안 함)
+                    # "전"은 방금 추가되기 전 마지막 기록과 비교 (단, 날짜가 다르면 비교 안 함)
                     candidate = all_values[-2]
                     if len(candidate) > 1 and candidate[1].strip() == date_str:
                         prev_row = candidate
                 detail = format_ticks_detail(row, prev_row)
-                alert_time_hhmm = target_dt.strftime("%H:%M")
-                alert_economic_recorded(date_str, note, g.get("names"), detail,
-                                         event_time=g["time"], alert_time=alert_time_hhmm)
+                alert_economic_recorded(date_str, note, g.get("names"), detail, event_time=g["time"])
             else:
                 print(f"   ❌ 경제발표 전 종목 데이터 없음 - 기록 취소")
+
+        # 중요 발표 임박 예고 (10분전/5분전/1분전) - 시트 기록 없이 #economic-presentation 순수 알림
+        process_reminder_tiers(ws, now, g, date_str)
+
+        # 발표 20분 후 전/후 진폭 비교 - 시트 기록 없이 #economic-presentation 순수 알림
+        process_post_comparison(ws, now, g, date_str)
+
+
+def process_reminder_tiers(ws, now: datetime, g: dict, date_str: str):
+    """중요 경제발표 임박 예고 - 10분 전 / 5분 전 / 1분 전, 시트에는 기록하지 않는 순수 알림.
+    (기존에는 '10분전'만 시트에 기록하며 예고했는데, 2026-08-26부터 순수 알림 3단계로 교체)"""
+    from alerts import alert_reminder_tier
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    event_dt = KST.localize(datetime.strptime(f"{g['date']} {g['time']}", "%Y/%m/%d %H:%M"))
+    spreadsheet = ws.spreadsheet
+    for tier_label, tier_dt in [("10분 전", g["reminder_dt"]), ("5분 전", g["before_dt"]), ("1분 전", g["one_min_dt"])]:
+        if now < tier_dt or now >= event_dt:
+            continue  # 아직 그 시점이 안 됐거나, 발표가 이미 지나버려서 예고가 의미 없어짐
+        label = f"{g['label_pre']}_{tier_label}예고"
+        if is_reminder_sent(spreadsheet, date_str, label):
+            continue
+        alert_reminder_tier(date_str, tier_label, g["names"], g["time"])
+        mark_reminder_sent(spreadsheet, date_str, label)
+
+
+def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
+    """발표 20분 후, 발표 전(-5분) 대비 진폭이 얼마나 움직였는지 비교 알림.
+    시트에는 기록하지 않는 순수 알림 (2026-08-26 신규) - #economic-presentation"""
+    from alerts import alert_pre_post_comparison
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    compare_dt = g["compare_dt"]
+    if now < compare_dt:
+        return
+    label = f"{g['label_pre']}_20분후비교"
+    spreadsheet = ws.spreadsheet
+    if is_reminder_sent(spreadsheet, date_str, label):
+        return
+    try:
+        all_values = ws.get_all_values()
+    except Exception as e:
+        print(f"   ⚠️ 비교용 시트 읽기 오류: {e}")
+        return
+    before_row = None
+    for r in reversed(all_values[2:]):
+        if len(r) >= 11 and r[1].strip() == date_str and r[10].strip() == g["label_pre"]:
+            before_row = r
+            break
+    if before_row is None:
+        print(f"   ⏭️ [{g['label_pre']}] '전' 기록이 아직 없어서 20분 후 비교 스킵")
+        return
+    day_start = compare_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    after_row, any_data = build_row(day_start, compare_dt, date_str, time_str_from(compare_dt), "")
+    if not any_data:
+        print(f"   ❌ 20분 후 비교용 데이터 없음")
+        return
+    comparison = format_ticks_comparison(before_row, after_row)
+    name_str = ", ".join(g.get("names") or []) or "발표"
+    alert_pre_post_comparison(date_str, g["time"], name_str, comparison)
+    mark_reminder_sent(spreadsheet, date_str, label)
+
+
+def process_daily_digest(ws, now: datetime):
+    """매일 낮 3시, 오늘 예정된 경제발표 전체(중요도 필터 없음)를 한 번 정리해서 안내.
+    시트에는 기록하지 않는 순수 알림 (2026-08-26 신규) - #economic-presentation"""
+    from alerts import alert_daily_digest
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from economic_calendar import fetch_today_events_all
+    if now.weekday() >= 5:
+        return
+    if now.hour < 15:
+        return
+    today = now.date()
+    date_str = f"{today.year}. {today.month}. {today.day}"
+    label = "일일경제발표다이제스트"
+    spreadsheet = ws.spreadsheet
+    if is_reminder_sent(spreadsheet, date_str, label):
+        return
+    events = fetch_today_events_all()
+    if not events:
+        mark_reminder_sent(spreadsheet, date_str, label)  # 오늘 발표가 없어도 매 폴링마다 다시 확인하지 않도록 마킹
+        return
+
+    def _time_key(e):
+        parts = e["time"].strip().split(":")
+        try:
+            return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+        except Exception:
+            return (99, 99)
+
+    events_sorted = sorted(events, key=_time_key)
+    for e in events_sorted:
+        parts = e["time"].strip().split(":")
+        e["time"] = f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else e["time"]
+    alert_daily_digest(date_str, events_sorted)
+    mark_reminder_sent(spreadsheet, date_str, label)
 
 def check_rollover_alerts(ws, now: datetime):
     """오늘 아직 기록된 체크포인트가 없으면(오늘 첫 폴링으로 간주), 어제 대비
@@ -310,6 +438,7 @@ def main():
     check_rollover_alerts(ws, now)
     process_checkpoints(ws, now)
     process_economic(ws, now)
+    process_daily_digest(ws, now)
 
 if __name__ == "__main__":
     try:
