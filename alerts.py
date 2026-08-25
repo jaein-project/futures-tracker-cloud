@@ -59,11 +59,13 @@ def send_ntfy_alert(message: str, title: str = None) -> bool:
         return False
 
 
-def send_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR):
+def send_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR) -> bool:
     """Slack + ntfy 둘 다로 전송 (둘 중 하나만 설정돼 있어도 동작)
-    webhook_env_var로 어느 채널용 웹훅을 쓸지 지정 가능 (기본: #trading-notify)"""
-    send_slack_alert(message, title, webhook_env_var)
-    send_ntfy_alert(message, title)
+    webhook_env_var로 어느 채널용 웹훅을 쓸지 지정 가능 (기본: #trading-notify)
+    반환값: 둘 중 하나라도 성공하면 True (기존엔 반환값이 없어서 호출부에서 항상 실패로 보였음)"""
+    slack_ok = send_slack_alert(message, title, webhook_env_var)
+    ntfy_ok = send_ntfy_alert(message, title)
+    return slack_ok or ntfy_ok
 
 
 def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEBHOOK_ENV_VAR) -> bool:
