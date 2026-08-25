@@ -129,33 +129,43 @@ def alert_duplicate_streak(name, value, streak):
     )
 
 
-def alert_economic_recorded(date_str: str, note: str, names: list = None, detail: str = None):
+def alert_economic_recorded(date_str: str, note: str, names: list = None, detail: str = None,
+                             event_time: str = None, alert_time: str = None):
     """경제발표 진폭이 시트에 기록됐을 때 실시간 알림.
     '10분전' 라벨은 #economic-presentation(예고)으로, '전'/'후' 라벨은
     #futures-tracker(실제 기록)로 채널을 나눠서 전송함.
-    detail: 종목별 진폭(틱) 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
-    name_str = ", ".join(names) if names else ""
-    info = f"\n대상 지표: {name_str}" if name_str else ""
-    if detail:
-        info += f"\n{detail}"
+    event_time: 실제 발표 예정 시각 HH:MM (10분전 예고 문구용)
+    alert_time: 이 알림이 발생한 실제 시각 HH:MM (전/후 기록 문구용)
+    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
+    name_str = ", ".join(names) if names else "발표"
     if note.endswith("_10분전"):
+        time_part = f"{event_time} " if event_time else ""
+        message = f"🔔 {time_part}{name_str} 발표 10분 전이에요! (`{date_str}`)"
+        if detail:
+            message += f"\n{detail}"
         send_alert(
-            f"`{date_str}` `{note}` 10분 뒤 경제발표가 있어요." + info,
+            message,
             title="📢 경제발표 예고",
             webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
         )
     else:
+        offset_label = "5분 전" if note.endswith("_전") else "5분 후"
+        time_part = f" ({alert_time})" if alert_time else ""
+        message = f"[{name_str} 발표 {offset_label}] 진폭 기록 완료!{time_part}"
+        if detail:
+            message += f"\n{detail}"
         send_alert(
-            f"`{date_str}` `{note}` 진폭이 기록됐어요." + info,
+            message,
             title="📊 진폭 기록",
             webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
         )
 
 
-def alert_checkpoint_recorded(date_str: str, time_str: str, timing: str, detail: str = None):
+def alert_checkpoint_recorded(date_str: str, time_hhmm: str, timing: str, detail: str = None):
     """정기 체크포인트(아시아마감전 등) 진폭이 시트에 기록됐을 때 실시간 알림.
-    detail: 종목별 진폭(틱) 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
-    message = f"`{date_str} {time_str}` [{timing}] 진폭이 기록됐어요."
+    time_hhmm: 그 체크포인트의 실제 시각 HH:MM (예: '15:20')
+    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
+    message = f"[{timing} {time_hhmm}] 진폭 기록 완료! (`{date_str}`)"
     if detail:
         message += f"\n{detail}"
     send_alert(
