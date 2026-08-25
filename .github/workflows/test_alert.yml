@@ -114,7 +114,13 @@ jobs:
           python - <<'PY'
           from datetime import datetime
           import gh_actions_poll as gp
-          from alerts import alert_checkpoint_recorded, alert_economic_recorded
+          from alerts import (
+              alert_checkpoint_recorded,
+              alert_economic_recorded,
+              alert_reminder_tier,
+              alert_daily_digest,
+              alert_pre_post_comparison,
+          )
 
           # 지금 이 순간의 실제 진폭 값을 라이브로 조회 (실제 운영 코드와 동일한 함수 사용)
           now = datetime.now(gp.KST)
@@ -150,14 +156,26 @@ jobs:
           print(detail_with_prev)
           alert_checkpoint_recorded(date_str, time_hhmm, "유럽개장전(미리보기)", detail_with_prev)
 
-          print("=== 경제발표 미리보기 (10분전) ===")
-          alert_economic_recorded(date_str, "테스트발표_10분전", ["테스트 발표(미리보기)"], detail_with_prev, event_time=time_hhmm)
+          print("=== 경제발표 미리보기 (전, 5분전) ===")
+          alert_economic_recorded(date_str, "테스트발표_전", ["테스트 발표(미리보기)"], detail_no_prev, event_time=time_hhmm)
 
-          print("=== 경제발표 미리보기 (전) ===")
-          alert_economic_recorded(date_str, "테스트발표_전", ["테스트 발표(미리보기)"], detail_no_prev, alert_time=time_hhmm)
+          print("=== 경제발표 미리보기 (후, 5분후) ===")
+          alert_economic_recorded(date_str, "테스트발표_후", ["테스트 발표(미리보기)"], detail_with_prev, event_time=time_hhmm)
 
-          print("=== 경제발표 미리보기 (후) ===")
-          alert_economic_recorded(date_str, "테스트발표_후", ["테스트 발표(미리보기)"], detail_with_prev, alert_time=time_hhmm)
+          print("=== 경제발표 예고 미리보기 (10분전/5분전/1분전) ===")
+          for tier_label in ("10분 전", "5분 전", "1분 전"):
+              alert_reminder_tier(date_str, tier_label, ["테스트 발표(미리보기)", "테스트 발표2(미리보기)"], time_hhmm)
+
+          print("=== 일일 경제발표 다이제스트 미리보기 ===")
+          fake_events = [
+              {"time": "09:00", "name": "테스트 발표A(미리보기)"},
+              {"time": "21:30", "name": "테스트 발표B(미리보기)"},
+              {"time": "21:30", "name": "테스트 발표C(미리보기)"},
+          ]
+          alert_daily_digest(date_str, fake_events)
+
+          print("=== 경제발표 전/후(20분) 비교 미리보기 ===")
+          alert_pre_post_comparison(date_str, time_hhmm, "테스트 발표(미리보기)", detail_with_prev)
 
           print("전송 완료 (각 메시지의 성공/실패는 위 콘솔 진단 로그 참고)")
           PY
