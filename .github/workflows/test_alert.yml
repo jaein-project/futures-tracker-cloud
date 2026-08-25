@@ -7,6 +7,16 @@ on:
         description: "테스트 메시지"
         required: false
         default: "진폭 알림 시스템 테스트입니다."
+      channel:
+        description: "테스트할 채널"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - trading
+          - economic
+          - tracker
 
 jobs:
   test:
@@ -24,8 +34,28 @@ jobs:
       - name: "테스트 알림 전송"
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           SLACK_WEBHOOK_URL_ECONOMIC: ${{ secrets.SLACK_WEBHOOK_URL_ECONOMIC }}
           SLACK_WEBHOOK_URL_TRACKER: ${{ secrets.SLACK_WEBHOOK_URL_TRACKER }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TEST_MESSAGE: ${{ inputs.message }}
+          TEST_CHANNEL: ${{ inputs.channel }}
         run: |
-          python -c "from alerts import send_alert; send_alert('${{ inputs.message }}', title='🧪 테스트 알림')"
+          python - <<'PY'
+          import os
+          from alerts import send_slack_alert, WEBHOOK_ENV_VAR, WEBHOOK_ECONOMIC_ENV_VAR, WEBHOOK_TRACKER_ENV_VAR
+
+          message = os.environ.get("TEST_MESSAGE") or "진폭 알림 시스템 테스트입니다."
+          channel = os.environ.get("TEST_CHANNEL") or "all"
+
+          targets = {
+              "trading": ("#trading-notify", WEBHOOK_ENV_VAR),
+              "economic": ("#economic-presentation", WEBHOOK_ECONOMIC_ENV_VAR),
+              "tracker": ("#futures-tracker", WEBHOOK_TRACKER_ENV_VAR),
+          }
+
+          to_test = list(targets.items()) if channel == "all" else [(channel, targets[channel])]
+
+          for key, (label, env_var) in to_test:
+              ok = send_slack_alert(f"[{label}] {message}", title="🧪 채널 테스트", webhook_env_var=env_var)
+              print(f"{label}: {'성공' if ok else '실패'}")
+          PY
