@@ -1,0 +1,29 @@
+name: "알림 테스트 (수동 실행)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "테스트 메시지"
+        required: false
+        default: "진폭 알림 시스템 테스트입니다."
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "패키지 설치"
+        run: pip install requests
+
+      - name: "테스트 알림 전송"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          python -c "from alerts import send_alert; send_alert('${{ inputs.message }}', title='🧪 테스트 알림')"
