@@ -211,6 +211,8 @@ def process_economic(ws, now: datetime):
             if any_data:
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ 경제발표 기록 완료: {date_str} {note}")
+                from alerts import alert_economic_recorded
+                alert_economic_recorded(date_str, note, g.get("names"))
             else:
                 print(f"   ❌ 경제발표 전 종목 데이터 없음 - 기록 취소")
 
