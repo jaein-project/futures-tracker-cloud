@@ -189,6 +189,8 @@ def process_checkpoints(ws, now: datetime):
                 check_duplicate_streak(all_values, row)
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
+                from alerts import alert_checkpoint_recorded
+                alert_checkpoint_recorded(date_str, time_str, timing)
                 # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지되도록 갱신
                 all_values.append(row)
             else:
