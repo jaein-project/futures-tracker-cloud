@@ -2,7 +2,10 @@
 경제발표 자동화 모듈
 - 경제발표 구글 시트에서 오늘 중요 지표 읽기
 - 신규실업수당 / 비농(금요일) / 기준금리·금리결정 / CPI / PCE / PPI / ISM PMI / 소매판매 / FOMC / 파월 연설 해당하면
-- 발표 10분 전 / 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록
+- 발표 5분 전 / 발표 후 5분 → 진폭 시트에 자동 기록 (#futures-tracker 알림)
+- 발표 10분 전 / 5분 전 / 1분 전 → 시트 기록 없이 순수 예고 알림만 (#economic-presentation)
+- 발표 20분 후 → 전(-5분) 대비 진폭 비교 알림 (#economic-presentation, 시트 기록 없음)
+- 매일 낮 3시 → 오늘 예정된 경제발표 전체(중요도 필터 없음) 다이제스트 (#economic-presentation)
 """
 
 import re
@@ -44,6 +47,46 @@ def is_amplitude_target(name: str, weekday: str) -> bool:
     if "파월" in name or "Powell" in name:
         return True
     return False
+
+
+def fetch_today_events_all():
+    """경제발표 시트에서 오늘 날짜의 '미국' 지표 전체를 중요도 필터 없이 읽기
+    (매일 낮 3시 '오늘의 경제 발표 전체' 다이제스트용 - is_amplitude_target 필터를 타지 않음)"""
+    from google_sheet import get_client
+
+    now = datetime.now(KST)
+    today_str = now.strftime("%Y/%m/%d")
+
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        ws = spreadsheet.worksheet(CALENDAR_SHEET)
+        all_rows = ws.get_all_values()
+
+        events = []
+        for row in all_rows[2:]:  # 헤더 2행 건너뜀
+            if len(row) < 6:
+                continue
+
+            row_date    = row[1].strip()
+            row_time    = row[3].strip()
+            row_country = row[4].strip()
+            row_name    = row[5].strip()
+
+            if row_date != today_str:
+                continue
+            if "미국" not in row_country:
+                continue
+            if not row_name:
+                continue
+
+            events.append({"date": row_date, "time": row_time, "name": row_name})
+
+        return events
+
+    except Exception as ex:
+        print(f"   ❌ 경제발표 시트(전체) 읽기 오류: {ex}")
+        return []
 
 
 def fetch_today_events():
@@ -142,8 +185,10 @@ def get_today_event_groups():
             "label_pre": f"미국_{short_label}_전",
             "label_post": f"미국_{short_label}_후",
             "reminder_dt": event_dt - timedelta(minutes=10),
+            "one_min_dt": event_dt - timedelta(minutes=1),
             "before_dt": event_dt - timedelta(minutes=5),
             "after_dt": event_dt + timedelta(minutes=5),
+            "compare_dt": event_dt + timedelta(minutes=20),
         })
 
     return result
