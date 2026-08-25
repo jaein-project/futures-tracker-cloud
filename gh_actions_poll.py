@@ -89,6 +89,8 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
         else:
             row.append("")
             print(f"   ⚠️ [{name}] 데이터 없음")
+            from alerts import alert_symbol_missing
+            alert_symbol_missing(name, symbol)
     row.append(note)
     return row, any_data
 
@@ -199,7 +201,7 @@ def process_economic(ws, now: datetime):
     for g in groups:
         d = datetime.strptime(g["date"], "%Y/%m/%d")
         date_str = f"{d.year}. {d.month}. {d.day}"
-        for target_dt, note in [(g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
+        for target_dt, note in [(g["reminder_dt"], g["label_reminder"]), (g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
             if now < target_dt:
                 continue
             if is_duplicate(ws, date_str, note):
@@ -216,12 +218,41 @@ def process_economic(ws, now: datetime):
             else:
                 print(f"   ❌ 경제발표 전 종목 데이터 없음 - 기록 취소")
 
+def check_rollover_alerts(ws, now: datetime):
+    """오늘 아직 기록된 체크포인트가 없으면(오늘 첫 폴링으로 간주), 어제 대비
+    월물이 자동으로 바뀐 종목이 있는지 확인해서 알림"""
+    from contract_roll import CONTRACT_RULES, get_symbol
+    from alerts import alert_symbol_rolled
+    today = now.date()
+    today_str = f"{today.year}. {today.month}. {today.day}"
+    try:
+        all_values = ws.get_all_values()
+    except Exception as e:
+        print(f"   ⚠️ 롤오버 확인용 시트 읽기 오류: {e}")
+        return
+    for row in all_values[2:]:
+        if len(row) >= 2 and row[1].strip() == today_str:
+            return  # 오늘 이미 기록된 행이 있음 - 오늘 첫 폴링이 아니므로 스킵
+    yesterday = today - timedelta(days=1)
+    for name in CONTRACT_RULES:
+        try:
+            old_symbol = get_symbol(name, yesterday)
+            new_symbol = get_symbol(name, today)
+        except Exception as e:
+            print(f"   ⚠️ [{name}] 롤오버 확인 오류: {e}")
+            continue
+        if old_symbol != new_symbol:
+            print(f"🔄 [{name}] 월물 자동 롤오버 감지: {old_symbol} → {new_symbol}")
+            alert_symbol_rolled(name, old_symbol, new_symbol)
+
+
 def main():
     now = datetime.now(KST)
     print(f"🔍 폴링 체크 - {now.strftime('%Y-%m-%d %H:%M:%S')} KST")
     client = get_client()
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
     ws = spreadsheet.worksheet(SHEET_NAME)
+    check_rollover_alerts(ws, now)
     process_checkpoints(ws, now)
     process_economic(ws, now)
 
