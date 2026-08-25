@@ -120,6 +120,7 @@ jobs:
               alert_reminder_tier,
               alert_daily_digest,
               alert_pre_post_comparison,
+              alert_duplicate_streak,
           )
 
           # 지금 이 순간의 실제 진폭 값을 라이브로 조회 (실제 운영 코드와 동일한 함수 사용)
@@ -176,6 +177,9 @@ jobs:
 
           print("=== 경제발표 전/후(20분) 비교 미리보기 ===")
           alert_pre_post_comparison(date_str, time_hhmm, "테스트 발표(미리보기)", detail_with_prev)
+
+          print("=== 진폭 값 반복 감지 미리보기 (#trading-notify, 임계값 3) ===")
+          alert_duplicate_streak("테스트종목(미리보기)", 999, 3)
 
           print("전송 완료 (각 메시지의 성공/실패는 위 콘솔 진단 로그 참고)")
           PY
