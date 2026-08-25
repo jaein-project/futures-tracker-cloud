@@ -8,8 +8,10 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 
 채널별로 다른 웹훅을 쓸 수 있습니다 (Slack 웹훅은 1개 = 1채널 고정):
   - SLACK_WEBHOOK_URL           → #trading-notify (문제/에러 알림 전용)
-  - SLACK_WEBHOOK_URL_ECONOMIC  → #economic-presentation (경제발표 10분전 예고)
-  - SLACK_WEBHOOK_URL_TRACKER   → #futures-tracker (진폭 실제 기록 알림)
+  - SLACK_WEBHOOK_URL_ECONOMIC  → #economic-presentation (경제발표 예고 10/5/1분전, 일일 다이제스트,
+                                   발표 20분후 전/후 비교 - 전부 시트에는 기록하지 않는 순수 알림)
+  - SLACK_WEBHOOK_URL_TRACKER   → #futures-tracker (체크포인트 + 경제발표 전/후 5분, 진폭이 실제로
+                                   시트에 기록될 때만 오는 알림)
 
 사용 전 준비:
   1) Slack 앱의 Incoming Webhooks 페이지에서 채널별로 "Add New Webhook to
@@ -123,55 +125,109 @@ def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
 
 
 def alert_duplicate_streak(name, value, streak):
-    """같은 값이 연속으로 여러 번 기록됐을 때 (월물 만기 임박/데이터 정체 의심)"""
+    """같은 값이 3번 이상 연속으로 기록됐을 때 (월물 만기 임박/데이터 정체 의심)
+    (2번은 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 - 2026-08-26 기준 변경)"""
     send_alert(
-        f"`{name}` 값이 {streak}번 연속 똑같이({value}) 기록되고 있어요. "
-        f"월물 만기가 다가와서 거래가 뜸해졌거나, 데이터 소스에 문제가 있을 수 있어요. 확인해주세요.",
-        title="🔁 진폭 값 반복 감지",
+        f"`{name}` 값이 {streak}번 연속 동일한 값으로 기록되고 있어요. \n"
+        f"월물 만기 혹은 데이터 소스에 문제가 있을 수 있어요. 확인 해주세요!\n"
+        f"➡️ 동일한 진폭 : {value}",
+        title="🚨진폭 값 반복 감지🚨",
     )
 
 
-def alert_economic_recorded(date_str: str, note: str, names: list = None, detail: str = None,
-                             event_time: str = None, alert_time: str = None):
-    """경제발표 진폭이 시트에 기록됐을 때 실시간 알림.
-    '10분전' 라벨은 #economic-presentation(예고)으로, '전'/'후' 라벨은
-    #futures-tracker(실제 기록)로 채널을 나눠서 전송함.
-    event_time: 실제 발표 예정 시각 HH:MM (10분전 예고 문구용)
-    alert_time: 이 알림이 발생한 실제 시각 HH:MM (전/후 기록 문구용)
-    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
-    name_str = ", ".join(names) if names else "발표"
-    if note.endswith("_10분전"):
-        time_part = f"{event_time} " if event_time else ""
-        message = f"🔔 {time_part}{name_str} 발표 10분 전이에요! (`{date_str}`)"
-        if detail:
-            message += f"\n{detail}"
-        send_alert(
-            message,
-            title="📢 경제발표 예고",
-            webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
-        )
-    else:
-        offset_label = "5분 전" if note.endswith("_전") else "5분 후"
-        time_part = f" ({alert_time})" if alert_time else ""
-        message = f"[{name_str} 발표 {offset_label}] 진폭 기록 완료!{time_part}"
-        if detail:
-            message += f"\n{detail}"
-        send_alert(
-            message,
-            title="📊 진폭 기록",
-            webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
-        )
+# 체크포인트 내부 키(스케줄 계산용) → 실제 알림 문구에 쓰는 표시명
+# 아시아/유럽은 원래 이름에 '장'이 없어서 추가, 미장전/미장후는 이미 '미(국)장'이 들어있어 그대로 둠
+CHECKPOINT_DISPLAY_NAMES = {
+    "아시아마감전": "아시아장마감전",
+    "유럽개장전": "유럽장개장전",
+    "미장전": "미장전",
+    "미장후": "미장후",
+}
+
+
+def _to_ampm_hhmm(time_hhmm: str) -> str:
+    """'15:20' -> '오후 3:20' 형태(12시간제)로 변환"""
+    try:
+        h, m = map(int, time_hhmm.split(":"))
+    except Exception:
+        return time_hhmm
+    period = "오전" if h < 12 else "오후"
+    h12 = h % 12
+    if h12 == 0:
+        h12 = 12
+    return f"{period} {h12}:{m:02d}"
 
 
 def alert_checkpoint_recorded(date_str: str, time_hhmm: str, timing: str, detail: str = None):
-    """정기 체크포인트(아시아마감전 등) 진폭이 시트에 기록됐을 때 실시간 알림.
-    time_hhmm: 그 체크포인트의 실제 시각 HH:MM (예: '15:20')
+    """정기 체크포인트(아시아마감전 등) 진폭이 시트에 기록됐을 때 #futures-tracker로 실시간 알림.
+    time_hhmm: 그 체크포인트의 실제 시각 24시간제 HH:MM (예: '15:20') - 문구에는 12시간제로 변환해서 표시
     detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
-    message = f"[{timing} {time_hhmm}] 진폭 기록 완료! (`{date_str}`)"
+    display_name = CHECKPOINT_DISPLAY_NAMES.get(timing, timing)
+    ampm_time = _to_ampm_hhmm(time_hhmm)
+    message = f"`{display_name}({ampm_time})` 진폭 기록 완료!"
     if detail:
         message += f"\n{detail}"
     send_alert(
         message,
-        title="📊 진폭 기록",
+        title=f"✏️ {date_str} 진폭 업데이트 완료",
         webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+    )
+
+
+def alert_economic_recorded(date_str: str, note: str, names: list = None, detail: str = None,
+                             event_time: str = None):
+    """경제발표 전(5분전)/후(5분후) 진폭이 시트에 기록됐을 때 #futures-tracker로 실시간 알림.
+    (2026-08-26부터 '10분전' 예고는 이 함수가 아니라 alert_reminder_tier()가 전담함 - 시트 기록과 분리)
+    event_time: 그 발표의 실제 예정 시각 HH:MM (예: '21:30')
+    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
+    name_str = ", ".join(names) if names else "발표"
+    is_post = note.endswith("_후")
+    offset_label = "5분 후" if is_post else "5분 전"
+    emoji = "🫧" if is_post else "🔥"
+    time_part = f"{event_time} " if event_time else ""
+    message = f"[{time_part}{name_str} 발표 {offset_label}{emoji}] 진폭 기록 완료!"
+    if detail:
+        message += f"\n{detail}"
+    title = f"✏️ {date_str} 경제 발표 {'후' if is_post else '전'} 진폭 업데이트 완료"
+    send_alert(
+        message,
+        title=title,
+        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+    )
+
+
+def alert_reminder_tier(date_str: str, tier_label: str, names: list, event_time: str):
+    """중요 경제발표 임박 예고 (10분 전 / 5분 전 / 1분 전) - #economic-presentation 전용.
+    시트에는 아무것도 기록하지 않는 순수 알림 (2026-08-26 신규).
+    같은 시각에 겹치는 지표는 names에 전부 담겨서 한 번에 나감."""
+    lines = "\n".join(f"{event_time}\t{name}" for name in (names or []))
+    message = f"\n{lines}"
+    send_alert(
+        message,
+        title=f"🚨{date_str} 경제 발표 `{tier_label}` 예고🚨",
+        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+    )
+
+
+def alert_daily_digest(date_str: str, events: list):
+    """매일 낮 3시, 오늘 예정된 경제발표 전체(중요도 필터 없음) 목록 안내 - #economic-presentation 전용.
+    시트에는 기록하지 않는 순수 안내 알림 (2026-08-26 신규).
+    events: [{"time": "21:30", "name": "..."}, ...] (시간순 정렬된 상태로 전달받음)"""
+    lines = "\n".join(f"{e['time']}\t{e['name']}" for e in events)
+    send_alert(
+        lines,
+        title=f"🔥 {date_str} 오늘의 경제 발표🔥",
+        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+    )
+
+
+def alert_pre_post_comparison(date_str: str, event_time: str, name_str: str, comparison: str):
+    """경제발표 20분 후, 발표 전(-5분) 대비 진폭이 얼마나 움직였는지 한눈에 보는 비교 알림
+    - #economic-presentation 전용. 시트에는 기록하지 않는 순수 알림 (2026-08-26 신규).
+    comparison: '{종목} {전값} > {후값} (▲증감)' 형태 줄들을 이미 만들어서 전달받음"""
+    message = f"[{event_time} {name_str} 발표 기준]\n{comparison}"
+    send_alert(
+        message,
+        title=f"📊 {date_str} 경제 발표 전/후 진폭 비교",
+        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
     )
