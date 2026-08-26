@@ -257,8 +257,13 @@ def process_checkpoints(ws, now: datetime):
                 detail = format_ticks_detail(row, prev_row)
                 time_hhmm = target_dt.strftime("%H:%M")
                 alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
-                # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지되도록 갱신
-                all_values.append(row)
+                # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지/비교되도록 갱신
+                # (주의: all_values의 다른 행들은 전부 A열이 빈칸이라 인덱스가 1칸 밀린 시트 원본 형식이라
+                #  build_row()가 만든 로컬 row([date_str, time_str, tick*7, note], 밀림 없음)를 그냥 append하면
+                #  같은 실행 회차에서 바로 다음 체크포인트를 처리할 때 prev_row 인덱스가 어긋나서
+                #  "거래일 경계" 판정이 오작동해 화살표 비교가 통째로 빠지는 버그가 있었음 (2026-08-26 발견)
+                #  → 앞에 빈 문자열 하나를 붙여서 시트 원본과 동일한 형식으로 맞춰줌
+                all_values.append([""] + row)
             else:
                 print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
 
