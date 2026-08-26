@@ -42,6 +42,25 @@ def is_summer_time():
     eastern = pytz.timezone("America/New_York")
     return bool(datetime.now(eastern).dst())
 
+def trading_day_start(dt_kst: datetime) -> datetime:
+    """dt_kst가 속한 '실제 거래일'의 시작 시각(KST)을 반환.
+
+    2026-08-26 발견: CME그룹(CME/NYMEX/COMEX - 우리가 쓰는 7개 종목 전부 포함)은
+    하루를 자정(00:00 KST) 기준으로 끊는 게 아니라, 매일 시카고시간 오후 4~5시
+    (서머타임 적용시 한국시간 06:00~07:00, 미적용시 07:00~08:00)에 정산 휴장을 하고
+    그 직후부터 새 거래일이 시작됨. Yahoo Finance 5분봉 거래량으로 나스닥/유로/
+    천연가스/골드/구리 5개 종목을 직접 확인해서 이 리셋 시각을 실측 확인함.
+
+    day_start를 자정으로 잡으면, 자정~리셋시각(예: 00:00~07:00) 사이의 값이
+    실제로는 '전날 거래일의 마지막 구간'인데 '오늘'로 잘못 누적되어 진폭이
+    실제 HTS 화면(당일 세션 기준)보다 부풀려짐 - 이 함수로 그 구간을 전날
+    거래일에 정확히 귀속시킴."""
+    boundary_hour = 7 if is_summer_time() else 8
+    boundary = dt_kst.replace(hour=boundary_hour, minute=0, second=0, microsecond=0)
+    if dt_kst < boundary:
+        boundary -= timedelta(days=1)
+    return boundary
+
 def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: datetime, multiplier=None):
     """day_start_kst 부터 target_dt_kst 까지의 분봉 누적 고가/저가"""
     period1 = int(day_start_kst.astimezone(pytz.UTC).timestamp())
@@ -240,7 +259,7 @@ def process_checkpoints(ws, now: datetime):
                 continue  # 아직 미래 시각
             record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
             date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
-            day_start = record_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_start = trading_day_start(target_dt)
             if checkpoint_already_recorded_cached(all_values, date_str, target_dt):
                 continue
             print(f"🚀 [{timing}] {date_str} 누락분 발견 - {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 역산 중...")
@@ -282,7 +301,7 @@ def process_economic(ws, now: datetime):
             if is_duplicate(ws, date_str, note):
                 continue
             print(f"📌 경제발표 기록 시도: {date_str} {note}")
-            day_start = target_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_start = trading_day_start(target_dt)
             time_str = time_str_from(target_dt)
             row, any_data = build_row(day_start, target_dt, date_str, time_str, note)
             if any_data:
@@ -360,7 +379,7 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
     if before_row is None:
         print(f"   ⏭️ [{g['label_pre']}] '전' 기록이 아직 없어서 20분 후 비교 스킵")
         return
-    day_start = compare_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = trading_day_start(compare_dt)
     after_row, any_data = build_row(day_start, compare_dt, date_str, time_str_from(compare_dt), "")
     if not any_data:
         print(f"   ❌ 20분 후 비교용 데이터 없음")
