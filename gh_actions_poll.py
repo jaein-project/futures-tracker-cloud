@@ -15,23 +15,37 @@ GitHub Actions 전용 통합 스크립트 - 5분마다 실행
 import re
 import requests
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as _date
 from yahoo_data import SYMBOLS
 from google_sheet import get_client, SPREADSHEET_ID, SHEET_NAME, SYMBOL_ORDER, calc_ticks, is_duplicate
 from economic_calendar import get_today_event_groups
 
 KST = pytz.timezone("Asia/Seoul")
 SUMMER_SCHEDULE = {
+    "아시아장중":   "12:00",
     "아시아마감전": "15:20",
     "유럽개장전":   "15:55",
     "미장전":       "22:25",
     "미장후":       "05:05",
 }
 WINTER_SCHEDULE = {
+    "아시아장중":   "12:00",
     "아시아마감전": "15:20",
     "유럽개장전":   "15:55",
     "미장전":       "23:25",
     "미장후":       "06:05",
+}
+
+# 2026-08-26 추가: CME 공식 완전휴장일 (전 거래소 완전 휴장 - 해당일은 진폭 기록 자체를 스킵)
+# 출처: https://www.cmegroup.com/tools-information/holiday-calendar.html
+# ⚠️ 상품군(주가지수/에너지/금속/통화)별로 실제 완전휴장 여부가 다를 수 있어 매년 공식 페이지로
+#    재확인 필요 - 그래서 매년 12월 초/중순/말 3회 #trading-notify로 갱신 리마인더를 보냄
+#    (process_holiday_calendar_reminder 참고)
+FULL_HOLIDAYS_KST = {
+    _date(2026, 1, 1):   "신정",
+    _date(2026, 4, 3):   "굿프라이데이",
+    _date(2026, 11, 26): "추수감사절",
+    _date(2026, 12, 25): "크리스마스",
 }
 CHECK_WINDOW_MINUTES = 30  # 정기 체크포인트 중복 확인용 시간 창
 HEADERS = {
@@ -259,12 +273,36 @@ def process_checkpoints(ws, now: datetime):
                 continue  # 아직 미래 시각
             record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
             date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
+
+            # 2026-08-26 추가: 완전휴장일이면 기록 자체를 스킵. 하루의 첫 체크포인트인 "아시아장중"
+            # 시점에만 안내 알림을 1회 보내고, 나머지 4개 체크포인트는 조용히 스킵함.
+            holiday_name = FULL_HOLIDAYS_KST.get(record_date.date())
+            if holiday_name:
+                if timing == "아시아장중":
+                    process_full_holiday_today(ws, date_str, holiday_name)
+                continue
+
             day_start = trading_day_start(target_dt)
             if checkpoint_already_recorded_cached(all_values, date_str, target_dt):
                 continue
             print(f"🚀 [{timing}] {date_str} 누락분 발견 - {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 역산 중...")
             time_str = time_str_from(target_dt)
             row, any_data = build_row(day_start, target_dt, date_str, time_str, "")
+
+            # 2026-08-26 추가: 하드코딩 목록에 없는 날인데 7개 종목 전부 무변동(고=저)이면
+            # 예상 못한 휴장/이슈일 가능성이 커서 기록을 스킵하고 확인 알림만 보냄 (데이터 기반 백업 감지)
+            present_vals = [v for v in row[2:9] if v != "" and v is not None]
+            if any_data and present_vals and all(v == 0 for v in present_vals):
+                print(f"   🚨 [{timing}] 전 종목 무변동(고=저) 감지 - 예상 못한 휴장 가능성, 기록 스킵")
+                from google_sheet import is_reminder_sent, mark_reminder_sent
+                from alerts import alert_unexpected_no_trading
+                spreadsheet = ws.spreadsheet
+                label = f"{timing}_전종목무변동"
+                if not is_reminder_sent(spreadsheet, date_str, label):
+                    alert_unexpected_no_trading(date_str, timing)
+                    mark_reminder_sent(spreadsheet, date_str, label)
+                continue
+
             if any_data:
                 check_duplicate_streak(all_values, row)
                 ws.append_row(row, value_input_option="USER_ENTERED")
@@ -283,8 +321,68 @@ def process_checkpoints(ws, now: datetime):
                 #  "거래일 경계" 판정이 오작동해 화살표 비교가 통째로 빠지는 버그가 있었음 (2026-08-26 발견)
                 #  → 앞에 빈 문자열 하나를 붙여서 시트 원본과 동일한 형식으로 맞춰줌
                 all_values.append([""] + row)
+
+                # 2026-08-26 추가: 미장후(하루의 마지막 체크포인트) 기록이 끝나면
+                # ① 하루 마감 요약 알림(아시아장중 대비 미장마감) ② 내일이 완전휴장일이면 예고 안내
+                if timing == "미장후":
+                    day_rows = [r for r in all_values if len(r) > 1 and r[1].strip() == date_str]
+                    if len(day_rows) >= 2:
+                        first_row = day_rows[0]
+                        comparison = format_ticks_comparison(first_row, row)
+                        from alerts import alert_daily_summary
+                        alert_daily_summary(date_str, comparison)
+
+                    tomorrow = record_date.date() + timedelta(days=1)
+                    tomorrow_holiday = FULL_HOLIDAYS_KST.get(tomorrow)
+                    if tomorrow_holiday:
+                        process_full_holiday_tomorrow(ws, tomorrow, tomorrow_holiday)
             else:
                 print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
+
+def process_full_holiday_today(ws, date_str: str, holiday_name: str):
+    """완전휴장일 당일 - 하루의 첫 체크포인트인 '아시아장중' 시점에만 1회 안내
+    (#futures-tracker + #trading-notify 동시발송, 알림기록 탭으로 중복 방지) - 2026-08-26 신규"""
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from alerts import alert_full_holiday_today
+    spreadsheet = ws.spreadsheet
+    label = "완전휴장_당일안내"
+    if is_reminder_sent(spreadsheet, date_str, label):
+        return
+    alert_full_holiday_today(date_str, holiday_name)
+    mark_reminder_sent(spreadsheet, date_str, label)
+
+
+def process_full_holiday_tomorrow(ws, tomorrow: _date, holiday_name: str):
+    """완전휴장일 전날 - 미장후(+하루 마감 요약) 알림이 끝난 뒤 #trading-notify로 예고
+    (알림기록 탭으로 중복 방지) - 2026-08-26 신규"""
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from alerts import alert_full_holiday_tomorrow
+    tomorrow_str = f"{tomorrow.year}. {tomorrow.month}. {tomorrow.day}"
+    spreadsheet = ws.spreadsheet
+    label = "완전휴장_전날예고"
+    if is_reminder_sent(spreadsheet, tomorrow_str, label):
+        return
+    alert_full_holiday_tomorrow(tomorrow_str, holiday_name)
+    mark_reminder_sent(spreadsheet, tomorrow_str, label)
+
+
+def process_holiday_calendar_reminder(spreadsheet, now: datetime):
+    """매년 12월 초(1일)/중순(15일)/말(28일), 다음해 CME 휴장일 캘린더 갱신을 잊지 않도록
+    #trading-notify로 리마인더 3회 발송 (알림기록 탭으로 중복 방지) - 2026-08-26 신규"""
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from alerts import alert_holiday_calendar_reminder
+    if now.month != 12:
+        return
+    tier = {1: "early", 15: "mid", 28: "final"}.get(now.day)
+    if tier is None:
+        return
+    date_str = f"{now.year}. {now.month}. {now.day}"
+    label = f"휴장일캘린더리마인더_{tier}"
+    if is_reminder_sent(spreadsheet, date_str, label):
+        return
+    alert_holiday_calendar_reminder(tier)
+    mark_reminder_sent(spreadsheet, date_str, label)
+
 
 def process_economic(ws, now: datetime):
     groups = get_today_event_groups()
@@ -463,6 +561,7 @@ def main():
     process_checkpoints(ws, now)
     process_economic(ws, now)
     process_daily_digest(ws, now)
+    process_holiday_calendar_reminder(spreadsheet, now)
 
 if __name__ == "__main__":
     try:
