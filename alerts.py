@@ -143,7 +143,9 @@ def alert_duplicate_streak(name, value, streak):
 # 체크포인트 내부 키(스케줄 계산용) → 실제 알림 문구에 쓰는 표시명
 # 유럽만 원래 이름에 '장'이 없어서 추가, 아시아마감전/미장전/미장후는 원래 이름 그대로 사용
 # (2026-08-26: 아시아마감전에 '장'을 넣었다가 사용자 확인 후 원래 이름으로 되돌림)
+# (2026-08-26: 아시아장중 - 낮 12시, 하루의 첫 체크포인트 - 추가)
 CHECKPOINT_DISPLAY_NAMES = {
+    "아시아장중": "아시아장중",
     "아시아마감전": "아시아마감전",
     "유럽개장전": "유럽장개장전",
     "미장전": "미장전",
@@ -237,3 +239,77 @@ def alert_pre_post_comparison(date_str: str, event_time: str, name_str: str, com
         title=f"📊 {date_str} 경제 발표 전/후 진폭 비교",
         webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# 2026-08-26 추가: 아시아장중 체크포인트 / 하루 마감 요약 / 완전휴장일 안내 / 연말 캘린더 리마인더
+# ─────────────────────────────────────────────────────────────
+
+def alert_daily_summary(date_str: str, comparison: str):
+    """하루 전체(아시아장중 ~ 미장후) 진폭 요약 - 미장후 기록 직후 #futures-tracker로 발송.
+    comparison: format_ticks_comparison()으로 만든 '{종목} {시작값} > {마감값} (증감)' 줄들"""
+    message = f"⏰ 전일({date_str}) 진폭 결과\n아시아장중 대비 미장마감, 최종 진폭이에요!\n{comparison}"
+    send_alert(message, webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
+
+
+# 완전휴장일 안내에 곁들이는 휴일별 인사말 (굿프라이데이는 축하 성격이 아니라 인사말 없음)
+HOLIDAY_GREETINGS = {
+    "신정": "Happy New Year 🎉🥳",
+    "추수감사절": "Happy Thanksgiving 🦃🍂",
+    "크리스마스": "Merry Christmas 🎅🏻🎄",
+}
+
+
+def alert_full_holiday_today(date_str: str, holiday_name: str):
+    """완전휴장일 당일, 아시아장중 시점에 1회 - #futures-tracker + #trading-notify 동시발송."""
+    greeting = HOLIDAY_GREETINGS.get(holiday_name)
+    greeting_line = f"\n{greeting}" if greeting else ""
+    send_alert(
+        f"🎌 [휴장안내] 오늘({date_str})은 '{holiday_name}'로 미국 휴장일이라 진폭 기록을 쉬어갑니다!{greeting_line}",
+        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+    )
+    send_alert(
+        f"🎌 [휴장안내] 오늘({date_str})은 '{holiday_name}'로 미국 휴장일이니 참고 해주세요!",
+        webhook_env_var=WEBHOOK_ENV_VAR,
+    )
+
+
+def alert_full_holiday_tomorrow(date_str: str, holiday_name: str):
+    """완전휴장일 전날, 미장후(+하루 마감 요약) 알림 이후 - #trading-notify로 예고."""
+    greeting = HOLIDAY_GREETINGS.get(holiday_name)
+    greeting_line = f"\n{greeting}" if greeting else ""
+    send_alert(
+        f"🎌 [휴장안내] 내일({date_str})은 '{holiday_name}'로 미국 휴장일이라 진폭 기록이 없어요!{greeting_line}",
+        webhook_env_var=WEBHOOK_ENV_VAR,
+    )
+
+
+def alert_unexpected_no_trading(date_str: str, timing: str):
+    """하드코딩된 완전휴장일 목록에는 없는데 7개 종목 전부 무변동(고=저)으로 감지된 경우 -
+    예상 못한 휴장/데이터 문제일 수 있어 확인 요망 알림 (#trading-notify, 데이터 기반 백업 감지)."""
+    send_alert(
+        f"`{timing}` 시점에 7개 종목 전부 무변동(고=저)으로 감지돼서 기록을 스킵했어요.\n"
+        f"휴장일 목록에 없는 날인데 이렇게 나온 거라, 예상 못한 휴장이거나 데이터 문제일 수 있어요 - 확인해주세요!",
+        title=f"🚨 {date_str} 전종목 무변동 감지",
+        webhook_env_var=WEBHOOK_ENV_VAR,
+    )
+
+
+def alert_holiday_calendar_reminder(tier: str):
+    """연말 CME 다음해 휴장일 캘린더 갱신 리마인더 - #trading-notify, 12월 초/중순/말 3회.
+    tier: 'early' | 'mid' | 'final'"""
+    from datetime import datetime as _dt
+    next_year = _dt.now().year + 1
+    if tier == "early":
+        title = f"🔧 [운영 알림] {next_year}년 CME 휴장일 캘린더 업데이트 필요"
+        message = (
+            "재인님, 아래 링크에서 확인 후 코드에 반영해주세요 🙏\n"
+            "https://www.cmegroup.com/tools-information/holiday-calendar.html"
+        )
+    elif tier == "mid":
+        title = f"🔧 [운영 알림-리마인드] {next_year}년 휴장일 반영 확인"
+        message = f"재인님, {next_year}년 휴장일 코드 반영 했는지 체크해주세요 🙏"
+    else:  # final
+        title = f"🔧 [운영 알림-🚨최종리마인드🚨] {next_year}년 휴장일 반영 마감 체크"
+        message = f"재인님, {next_year}년 휴장일 코드 반영 완료됐는지, 날짜 오류는 없는지 마지막으로 꼭 확인해주세요 🙏"
+    send_alert(message, title=title, webhook_env_var=WEBHOOK_ENV_VAR)
