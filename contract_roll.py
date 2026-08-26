@@ -20,15 +20,29 @@
   1) 나스닥/유로/엔화(금융 선물, 분기월물)는 "계약월의 세 번째 금요일" 이라는
      잘 알려진 규칙을 그대로 코드화했습니다 - 이 부분은 신뢰도가 높습니다.
   2) 오일/천연가스/구리/골드(실물 상품, 매월물)는 "대략 이 시점에 다음 월물로
-     넘어간다"는 보수적인 근사 규칙입니다. 처음 롤오버가 일어나는 날, 영웅문/하나
-     HTS에서 실제로 어느 월물이 활발히 거래되는지 한 번만 비교해주시고,
-     하루라도 어긋나면 알려주세요 - roll_days_before 숫자만 조정하면 바로 고칠
-     수 있게 만들어뒀습니다.
+     넘어간다"는 보수적인 근사 규칙입니다. roll_days_before 날짜 규칙만으로는
+     실제 거래소 상황과 며칠씩 어긋날 수 있어서(2026-08-26, 천연가스 NGU26→NGV26
+     롤오버가 날짜 규칙보다 며칠 더 일찍 실제로 일어난 걸 하나HTS로 확인함),
+     아래 3번 거래량 자동 비교로 실시간 보정합니다.
   3) 계산된 심볼로 Yahoo Finance에서 데이터를 못 가져오거나 비정상적으로 비어
-     있으면 알림이 갑니다 (alerts.py 참고) - 이게 실질적인 안전장치입니다.
+     있으면 알림이 갑니다 (alerts.py 참고).
+  4) **거래량 기반 자동 보정 (2026-08-26 추가)**: 위 1)/2)의 날짜 규칙으로 일단
+     "이번 달 계약월"을 추정한 뒤, 실제로 Yahoo Finance에서 그 계약월과 바로
+     다음 계약월의 당일 거래량(regularMarketVolume)을 비교합니다. 다음 월물의
+     거래량이 이미 더 많다면 - 즉 실제 시장에서 이미 다음 월물로 활발히
+     거래가 옮겨갔다면 - 날짜 규칙과 무관하게 다음 월물로 넘어간 것으로 보고
+     자동으로 그 심볼을 씁니다 (`_volume_corrected_month`). 이러면 사람이
+     HTS를 직접 보고 "월물이 언제 바뀌었는지" 알려줄 필요 없이 매 폴링마다
+     스스로 확인/보정합니다. Yahoo 거래량 조회가 실패하면 안전하게 원래 날짜
+     규칙 값을 그대로 씁니다.
 """
 
 from datetime import date, timedelta
+import requests
+
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
 
 MONTH_CODE = {
     1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
@@ -112,15 +126,70 @@ def current_contract_month(cycle: list, rule: dict, today: date = None):
     return candidates[-1]  # fallback
 
 
+def _next_in_cycle(cycle: list, year: int, month: int):
+    """cycle 안에서 (year, month) 바로 다음 계약월 반환 (사이클 끝이면 다음 해 첫 달)"""
+    cycle_sorted = sorted(cycle)
+    if month in cycle_sorted:
+        idx = cycle_sorted.index(month)
+        if idx + 1 < len(cycle_sorted):
+            return year, cycle_sorted[idx + 1]
+        return year + 1, cycle_sorted[0]
+    # month가 cycle에 없는 예외 상황 대비 - 그냥 다음 달로
+    if month == 12:
+        return year + 1, 1
+    return year, month + 1
+
+
+def _symbol_str(base: str, exchange: str, year: int, month: int) -> str:
+    return f"{base}{MONTH_CODE[month]}{str(year)[-2:]}.{exchange}"
+
+
+def _get_volume(symbol: str):
+    """해당 심볼의 최근(당일) 거래량 조회. 실패하면 None (호출부에서 안전하게 무시)"""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        res = requests.get(url, headers=_HEADERS, timeout=10)
+        meta = res.json()["chart"]["result"][0]["meta"]
+        return meta.get("regularMarketVolume")
+    except Exception:
+        return None
+
+
+def _volume_corrected_month(base: str, rule: dict, year: int, month: int, max_steps: int = 2):
+    """날짜 규칙으로 추정한 계약월이 실제 시장과 맞는지 거래량으로 한 번 더 확인.
+    바로 다음 계약월의 거래량이 이미 현재(추정) 계약월보다 많으면, 실제로는
+    이미 그쪽으로 롤오버된 것으로 보고 다음 월물로 교체한다 (최대 max_steps단계
+    까지 연쇄 확인 - 두 달 이상 밀려있는 극단적인 경우 대비).
+    Yahoo 거래량 조회가 하나라도 실패하면 안전하게 원래 날짜 규칙 값을 그대로 둔다.
+    """
+    for _ in range(max_steps):
+        cur_symbol = _symbol_str(base, rule["exchange"], year, month)
+        next_year, next_month = _next_in_cycle(rule["cycle"], year, month)
+        next_symbol = _symbol_str(base, rule["exchange"], next_year, next_month)
+        cur_vol = _get_volume(cur_symbol)
+        next_vol = _get_volume(next_symbol)
+        if cur_vol is None or next_vol is None:
+            break  # 조회 실패 - 날짜 규칙 값 그대로 사용
+        if next_vol > cur_vol:
+            year, month = next_year, next_month
+            continue
+        break
+    return year, month
+
+
 def get_symbol(name: str, today: date = None) -> str:
     """종목명(예: '나스닥')에 대한 오늘 기준 Yahoo Finance 심볼을 자동 계산해서 반환
     예: get_symbol("나스닥") -> "MNQU26.CME"
+
+    1) 날짜 규칙(third_friday_same_month / n_days_before_month_start)으로 일단 추정
+    2) 바로 다음 계약월과 거래량을 비교해서, 이미 시장이 다음 월물로 넘어갔으면 보정
+       (2026-08-26: 천연가스가 날짜 규칙보다 며칠 먼저 실제로 롤오버된 걸 발견하고 추가)
     """
     rule = CONTRACT_RULES[name]
     base = BASE_TICKER[name]
     y, m = current_contract_month(rule["cycle"], rule, today)
-    code = MONTH_CODE[m] + str(y)[-2:]
-    return f"{base}{code}.{rule['exchange']}"
+    y, m = _volume_corrected_month(base, rule, y, m)
+    return _symbol_str(base, rule["exchange"], y, m)
 
 
 def build_symbols(today: date = None) -> dict:
@@ -136,7 +205,15 @@ def build_symbols(today: date = None) -> dict:
 if __name__ == "__main__":
     # 직접 실행하면 오늘 기준 계산 결과를 눈으로 확인할 수 있습니다.
     # 사용법: python contract_roll.py
+    # 날짜 규칙만으로 계산한 값과, 거래량 보정까지 거친 최종값을 같이 보여줘서
+    # 혹시 보정이 실제로 일어났는지 한눈에 확인할 수 있게 합니다.
     today = date.today()
     print(f"오늘({today}) 기준 자동 계산된 월물:\n")
-    for name, (symbol, mult) in build_symbols(today).items():
-        print(f"  {name:6s} -> {symbol}")
+    for name in CONTRACT_RULES:
+        rule = CONTRACT_RULES[name]
+        base = BASE_TICKER[name]
+        raw_y, raw_m = current_contract_month(rule["cycle"], rule, today)
+        raw_symbol = _symbol_str(base, rule["exchange"], raw_y, raw_m)
+        final_symbol = get_symbol(name, today)
+        mark = " (거래량 보정으로 변경됨!)" if final_symbol != raw_symbol else ""
+        print(f"  {name:6s} -> 날짜규칙: {raw_symbol:12s} 최종: {final_symbol}{mark}")
