@@ -1,0 +1,54 @@
+name: "임시 진단 - 천연가스/오일 월물 거래량 비교"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "패키지 설치"
+        run: pip install requests pytz
+
+      - name: "일별 거래량 비교 실행"
+        run: |
+          python - <<'PY'
+          import requests
+          from datetime import datetime
+          import pytz
+
+          HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+          US_EASTERN = pytz.timezone("America/New_York")
+
+          def get_daily_volumes(symbol, range_="2mo"):
+              url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+              params = {"range": range_, "interval": "1d"}
+              res = requests.get(url, headers=HEADERS, params=params, timeout=10)
+              data = res.json()
+              result = data["chart"]["result"][0]
+              timestamps = result["timestamp"]
+              quote = result["indicators"]["quote"][0]
+              volumes = quote.get("volume")
+              out = {}
+              for i, ts in enumerate(timestamps):
+                  d = datetime.fromtimestamp(ts, tz=pytz.UTC).astimezone(US_EASTERN).date()
+                  out[d] = volumes[i]
+              return out
+
+          def compare(base, cur_code, next_code, cur_label, next_label):
+              print(f"\n=== {base} : {cur_label} vs {next_label} ===")
+              cur = get_daily_volumes(cur_code)
+              nxt = get_daily_volumes(next_code)
+              dates = sorted(set(cur.keys()) | set(nxt.keys()))
+              print(f"{'날짜':12s} {cur_label:>12s} {next_label:>12s} {'우세':>8s}")
+              for d in dates:
+                  u = cur.get(d)
+                  v = nxt.get(d)
+                  winner = ""
+                  if u is not None and v is not None:
+                      winner = next_label if v > u else cur_label
+                  print(f"{d}  {str(u):>12s} {str(v):>12s} {winner:>8s}")
+
+          compare("천연가스", "NGU26.NYM", "NGV26.NYM", "NGU26", "NGV26")
+          compare("오일", "CLU26.NYM", "CLV26.NYM", "CLU26", "CLV26")
+          PY
