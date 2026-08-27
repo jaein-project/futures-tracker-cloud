@@ -308,9 +308,19 @@ def process_checkpoints(ws, now: datetime):
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
                 from alerts import alert_checkpoint_recorded
-                prev_row = all_values[-1] if len(all_values) > 2 else None
-                if prev_row is not None and len(prev_row) > 1 and prev_row[1].strip() != date_str:
-                    prev_row = None  # 거래일이 바뀌는 경계(예: 오늘 아시아마감전 vs 전일 미장후)는 비교 대상에서 제외
+                # 2026-08-27 발견: 직전 행을 무조건 all_values[-1]로 잡으면, 그 사이에 경제발표
+                # 행(process_economic이 기록)이 끼어 있을 때 문제가 생김 - 경제발표는 날짜를
+                # (트레이딩일 기준이 아니라) 달력 날짜 그대로 쓰기 때문에, 자정 넘어 발표된 경제지표가
+                # "다음 날짜"로 찍히고, 그 직후 오는 체크포인트(예: 미장후)가 "거래일 경계"로 오인해서
+                # 비교 자체를 건너뛰어 화살표가 통째로 사라지는 버그가 있었음. 경제발표 행(비고 있음)은
+                # 건너뛰고 가장 최근 "체크포인트" 행만 비교 대상으로 찾도록 수정.
+                prev_row = None
+                for r in reversed(all_values[2:]):
+                    if len(r) > 10 and r[10].strip():
+                        continue  # 비고가 있는 행(경제발표 등)은 비교 대상에서 제외
+                    if len(r) > 1 and r[1].strip() == date_str:
+                        prev_row = r
+                    break  # 체크포인트 행을 찾으면 날짜가 맞든 안 맞든 그 시점에서 멈춤(진짜 거래일 경계 판단)
                 detail = format_ticks_detail(row, prev_row)
                 time_hhmm = target_dt.strftime("%H:%M")
                 alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
