@@ -399,8 +399,15 @@ def process_economic(ws, now: datetime):
     if not groups:
         return
     for g in groups:
-        d = datetime.strptime(g["date"], "%Y/%m/%d")
-        date_str = f"{d.year}. {d.month}. {d.day}"
+        # 2026-08-27: 경제발표 기록의 날짜도 체크포인트와 동일하게 거래일(07:00/08:00 KST) 기준으로
+        # 계산. 예전엔 달력 날짜를 그대로 써서 새벽 발표(예: 0:45)가 다음 날짜로 찍히는 바람에
+        # 체크포인트 화살표 비교가 깨지는 등 문제가 있었음 - economic_calendar.py의
+        # trading_day_start()와 동일 로직으로 통일.
+        _tp = g["time"].strip().split(":")
+        _hh, _mm = int(_tp[0]), (int(_tp[1]) if len(_tp) > 1 else 0)
+        event_kst_for_day = KST.localize(datetime.strptime(g["date"], "%Y/%m/%d").replace(hour=_hh, minute=_mm))
+        record_date = trading_day_start(event_kst_for_day).date()
+        date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
 
         # 실제 진폭 기록 (발표 전 5분 / 발표 후 5분) - 시트에 기록 + #futures-tracker 알림
         for target_dt, note in [(g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
@@ -508,7 +515,9 @@ def process_daily_digest(ws, now: datetime):
         return
     if now.hour < 15:
         return
-    today = now.date()
+    # 2026-08-27: 다이제스트도 거래일 기준으로 통일 (오후 3시 발송이라 실제로는 항상
+    # 달력 날짜와 동일하지만, 전체 로직 일관성을 위해 동일하게 맞춤)
+    today = trading_day_start(now).date()
     date_str = f"{today.year}. {today.month}. {today.day}"
     label = "일일경제발표다이제스트"
     spreadsheet = ws.spreadsheet
