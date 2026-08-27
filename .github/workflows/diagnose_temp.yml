@@ -1,0 +1,67 @@
+name: 골드구리 진단 (임시)
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests pytz
+      - name: run diagnostic
+        run: |
+          python - <<'PY'
+          import requests, pytz
+          from datetime import datetime
+
+          KST = pytz.timezone("Asia/Seoul")
+          HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+          def get_hl(symbol, day_start_kst, target_dt_kst):
+              period1 = int(day_start_kst.astimezone(pytz.UTC).timestamp())
+              period2 = int(target_dt_kst.astimezone(pytz.UTC).timestamp()) + 60
+              url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+              params = {"period1": period1, "period2": period2, "interval": "5m"}
+              res = requests.get(url, headers=HEADERS, params=params, timeout=15)
+              data = res.json()
+              result = data["chart"]["result"][0]
+              timestamps = result.get("timestamp")
+              if not timestamps:
+                  return None
+              quote = result["indicators"]["quote"][0]
+              highs, lows = [], []
+              for i, ts in enumerate(timestamps):
+                  if ts is None:
+                      continue
+                  bar_time = datetime.fromtimestamp(ts, tz=pytz.UTC).astimezone(KST)
+                  if day_start_kst <= bar_time <= target_dt_kst:
+                      h, l = quote["high"][i], quote["low"][i]
+                      if h is not None:
+                          highs.append(h)
+                      if l is not None:
+                          lows.append(l)
+              if not highs or not lows:
+                  return None
+              return max(highs), min(lows), len(highs)
+
+          day_start = KST.localize(datetime(2026, 8, 27, 7, 0, 0))
+          targets = {
+              "12:00": KST.localize(datetime(2026, 8, 27, 12, 0, 0)),
+              "15:20": KST.localize(datetime(2026, 8, 27, 15, 20, 0)),
+              "15:55": KST.localize(datetime(2026, 8, 27, 15, 55, 0)),
+          }
+
+          for name, symbol, tick in [("골드", "GCZ26.CMX", 0.1), ("구리", "HGZ26.CMX", 0.001)]:
+              print(f"===== {name} ({symbol}) =====")
+              for label, tdt in targets.items():
+                  r = get_hl(symbol, day_start, tdt)
+                  if r is None:
+                      print(f"  [{label}] 데이터 없음")
+                      continue
+                  h, l, n = r
+                  ticks = round((h - l) / tick)
+                  print(f"  [{label}] 고={h} 저={l} 바개수={n} 틱={ticks}")
+          PY
