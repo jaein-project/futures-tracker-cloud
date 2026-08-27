@@ -40,28 +40,27 @@ jobs:
                   if day_start_kst <= bar_time <= target_dt_kst:
                       h, l = quote["high"][i], quote["low"][i]
                       if h is not None:
-                          highs.append(h)
+                          highs.append((h, bar_time))
                       if l is not None:
-                          lows.append(l)
+                          lows.append((l, bar_time))
               if not highs or not lows:
                   return None
-              return max(highs), min(lows), len(highs)
+              best_h = max(highs, key=lambda x: x[0])
+              best_l = min(lows, key=lambda x: x[0])
+              return best_h, best_l, len(highs)
 
           day_start = KST.localize(datetime(2026, 8, 27, 7, 0, 0))
-          targets = {
-              "12:00": KST.localize(datetime(2026, 8, 27, 12, 0, 0)),
-              "15:20": KST.localize(datetime(2026, 8, 27, 15, 20, 0)),
-              "15:55": KST.localize(datetime(2026, 8, 27, 15, 55, 0)),
-          }
+          hours = [8, 9, 10, 11, 12, 13, 14, 15, 16]
+          targets = {f"{h:02d}:00": KST.localize(datetime(2026, 8, 27, h, 0, 0)) for h in hours}
 
           for name, symbol, tick in [("골드", "GCZ26.CMX", 0.1), ("구리", "HGZ26.CMX", 0.001)]:
-              print(f"===== {name} ({symbol}) =====")
+              print(f"===== {name} ({symbol}) - 시간대별 누적 고/저 및 발생시각 =====")
               for label, tdt in targets.items():
                   r = get_hl(symbol, day_start, tdt)
                   if r is None:
                       print(f"  [{label}] 데이터 없음")
                       continue
-                  h, l, n = r
+                  (h, h_t), (l, l_t), n = r
                   ticks = round((h - l) / tick)
-                  print(f"  [{label}] 고={h} 저={l} 바개수={n} 틱={ticks}")
+                  print(f"  [~{label}] 고={h}(발생:{h_t.strftime('%H:%M')}) 저={l}(발생:{l_t.strftime('%H:%M')}) 틱={ticks}")
           PY
