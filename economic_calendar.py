@@ -23,6 +23,40 @@ CALENDAR_SHEET = "경제발표"
 scheduled_events = set()
 
 
+def is_summer_time():
+    """gh_actions_poll.py와 동일 - 뉴욕 서머타임(DST) 여부로 CME 정산 리셋 시각(07:00/08:00 KST) 판단"""
+    eastern = pytz.timezone("America/New_York")
+    return bool(datetime.now(eastern).dst())
+
+
+def trading_day_start(dt_kst: datetime) -> datetime:
+    """2026-08-27 추가: 경제발표의 '오늘' 판단을 체크포인트(gh_actions_poll.py)와 동일한
+    거래일 기준(CME 정산 리셋 시각 - 서머타임 07:00 / 아니면 08:00 KST)으로 통일.
+    자정이 아니라 이 시각을 넘겨야 '다음 거래일'로 인정됨 - 그래서 새벽 0~7시 사이에
+    발표되는 지표(예: 0:45 Fed 연설, 2:00 국채입찰)는 달력상 날짜가 바뀌어도
+    '전날 거래일'에 속한 것으로 정확히 귀속됨.
+    (gh_actions_poll.py의 trading_day_start()와 완전히 동일한 로직 - 그쪽을 import하면
+    순환참조가 생겨서 이 모듈에도 동일하게 정의함)"""
+    boundary_hour = 7 if is_summer_time() else 8
+    boundary = dt_kst.replace(hour=boundary_hour, minute=0, second=0, microsecond=0)
+    if dt_kst < boundary:
+        boundary -= timedelta(days=1)
+    return boundary
+
+
+def _row_trading_day(row_date: str, row_time: str):
+    """경제발표 시트의 (달력 날짜, 시각) 한 쌍을 실제 거래일 날짜(date 객체)로 환산.
+    파싱 실패 시 None (호출부에서 안전하게 그 행을 건너뜀)."""
+    try:
+        parts = row_time.strip().split(":")
+        hh = int(parts[0])
+        mm = int(parts[1]) if len(parts) > 1 else 0
+        naive = datetime.strptime(row_date, "%Y/%m/%d").replace(hour=hh, minute=mm)
+        return trading_day_start(KST.localize(naive)).date()
+    except Exception:
+        return None
+
+
 def is_amplitude_target(name: str, weekday: str) -> bool:
     """진폭 기록 대상 지표 여부 (조건부 서식 기준)
     - 차트가 크게 흔들릴 만한 발표 위주로 선정 (2026-08-25 확장)"""
@@ -50,12 +84,15 @@ def is_amplitude_target(name: str, weekday: str) -> bool:
 
 
 def fetch_today_events_all():
-    """경제발표 시트에서 오늘 날짜의 '미국' 지표 전체를 중요도 필터 없이 읽기
-    (매일 낮 3시 '오늘의 경제 발표 전체' 다이제스트용 - is_amplitude_target 필터를 타지 않음)"""
+    """경제발표 시트에서 '오늘 거래일'의 '미국' 지표 전체를 중요도 필터 없이 읽기
+    (매일 낮 3시 '오늘의 경제 발표 전체' 다이제스트용 - is_amplitude_target 필터를 타지 않음)
+    2026-08-27: 달력 날짜(자정 기준)가 아니라 거래일(07:00/08:00 KST 기준)로 판단하도록 변경 -
+    새벽에 발표되는 지표가 엉뚱한 '다음 날짜'로 잡혀서 다이제스트에 잘못 묶이던 문제를
+    체크포인트와 동일한 기준으로 통일해서 해결."""
     from google_sheet import get_client
 
     now = datetime.now(KST)
-    today_str = now.strftime("%Y/%m/%d")
+    current_trading_day = trading_day_start(now).date()
 
     try:
         client = get_client()
@@ -73,7 +110,7 @@ def fetch_today_events_all():
             row_country = row[4].strip()
             row_name    = row[5].strip()
 
-            if row_date != today_str:
+            if _row_trading_day(row_date, row_time) != current_trading_day:
                 continue
             if "미국" not in row_country:
                 continue
@@ -94,7 +131,7 @@ def fetch_today_events():
     from google_sheet import get_client
 
     now = datetime.now(KST)
-    today_str = now.strftime("%Y/%m/%d")
+    current_trading_day = trading_day_start(now).date()
     weekday_ko = WEEKDAYS_KO[now.weekday()]
 
     try:
@@ -115,8 +152,9 @@ def fetch_today_events():
             row_country = row[4].strip()
             row_name    = row[5].strip()
 
-            # 오늘 날짜 + 미국만
-            if row_date != today_str:
+            # 오늘 거래일(07:00/08:00 KST 기준) + 미국만
+            # 2026-08-27: 달력 날짜 대신 거래일 기준으로 변경 (fetch_today_events_all과 동일 사유)
+            if _row_trading_day(row_date, row_time) != current_trading_day:
                 continue
             if "미국" not in row_country:
                 continue
@@ -155,7 +193,9 @@ def get_today_event_groups():
             "before_dt":..., "after_dt":..., "names":[...]}, ...]
     """
     now = datetime.now(KST)
-    if now.weekday() >= 5:
+    # 2026-08-27: 달력 요일이 아니라 거래일 기준 요일로 주말 판단 (예: 토요일 새벽 0~7시는
+    # 아직 금요일 거래일에 속하므로 스킵하면 안 됨)
+    if trading_day_start(now).weekday() >= 5:
         return []
 
     events = fetch_today_events()
