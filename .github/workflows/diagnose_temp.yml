@@ -1,0 +1,63 @@
+name: "임시 진단 - 구리 데이터 확인"
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: "패키지 설치"
+        run: pip install requests pytz
+      - name: "구리 데이터 진단"
+        run: |
+          python3 << 'PYEOF'
+          import requests, pytz
+          from datetime import datetime, timedelta
+
+          KST = pytz.timezone("Asia/Seoul")
+          HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+          now = datetime.now(KST)
+          boundary_hour = 7
+          day_start = now.replace(hour=boundary_hour, minute=0, second=0, microsecond=0)
+          if now < day_start:
+              day_start -= timedelta(days=1)
+
+          print(f"now(KST)={now}, day_start(KST)={day_start}")
+
+          for symbol in ["HGZ26.CMX", "HGU26.CMX"]:
+              print(f"\n===== {symbol} =====")
+              try:
+                  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                  period1 = int(day_start.astimezone(pytz.UTC).timestamp())
+                  period2 = int(now.astimezone(pytz.UTC).timestamp()) + 60
+                  params = {"period1": period1, "period2": period2, "interval": "5m"}
+                  res = requests.get(url, headers=HEADERS, params=params, timeout=15)
+                  data = res.json()
+                  result = data["chart"]["result"][0]
+                  meta = result.get("meta", {})
+                  print("meta:", {k: meta.get(k) for k in ["regularMarketPrice","regularMarketVolume","regularMarketTime","previousClose","instrumentType"]})
+                  timestamps = result.get("timestamp")
+                  if not timestamps:
+                      print("  -> 분봉 데이터 없음 (timestamps 비어있음)")
+                      continue
+                  quote = result["indicators"]["quote"][0]
+                  running_high, running_low = None, None
+                  print(f"  총 {len(timestamps)}개 5분봉")
+                  for i, ts in enumerate(timestamps):
+                      if ts is None:
+                          continue
+                      bt = datetime.fromtimestamp(ts, tz=pytz.UTC).astimezone(KST)
+                      h, l, v = quote["high"][i], quote["low"][i], quote.get("volume", [None]*len(timestamps))[i]
+                      if h is not None:
+                          running_high = h if running_high is None else max(running_high, h)
+                      if l is not None:
+                          running_low = l if running_low is None else min(running_low, l)
+                      if i < 5 or i >= len(timestamps) - 15:
+                          print(f"    {bt.strftime('%H:%M')} high={h} low={l} vol={v}  (누적고={running_high} 누적저={running_low})")
+                  print(f"  => 전체 누적 고가={running_high} 저가={running_low} 틱차이(0.001단위)={round((running_high-running_low)/0.001) if running_high and running_low else None}")
+              except Exception as e:
+                  print("  오류:", e)
+          PYEOF
