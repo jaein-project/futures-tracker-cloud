@@ -543,21 +543,20 @@ def process_daily_digest(ws, now: datetime):
     mark_reminder_sent(spreadsheet, date_str, label)
 
 def check_rollover_alerts(ws, now: datetime):
-    """오늘 아직 기록된 체크포인트가 없으면(오늘 첫 폴링으로 간주), 어제 대비
-    월물이 자동으로 바뀐 종목이 있는지 확인해서 알림"""
+    """어제 대비 월물이 자동으로 바뀐 종목이 있는지 확인해서 알림.
+    2026-08-28 수정: 예전엔 '오늘 날짜로 기록된 행이 시트에 하나도 없으면 오늘 첫 폴링'이라고
+    판단해서 그때만 확인했는데, 하루의 첫 체크포인트(아시아장중, 낮 12시)가 기록되기 전까지는
+    이 조건이 계속 참이라서, 폴링 주기를 5~10분으로 당긴 뒤로 자정~낮12시 사이 폴링마다
+    같은 롤오버 알림이 계속 중복 발송되는 버그가 있었음(2026-08-28 발견, 천연가스 약 30건 중복).
+    다른 순수 알림들(경제발표 예고, 완전휴장일 안내 등)과 동일하게 '알림기록' 탭으로
+    종목별 영구 중복 방지하도록 변경."""
     from contract_roll import CONTRACT_RULES, get_symbol
     from alerts import alert_symbol_rolled
+    from google_sheet import is_reminder_sent, mark_reminder_sent
     today = now.date()
     today_str = f"{today.year}. {today.month}. {today.day}"
-    try:
-        all_values = ws.get_all_values()
-    except Exception as e:
-        print(f"   ⚠️ 롤오버 확인용 시트 읽기 오류: {e}")
-        return
-    for row in all_values[2:]:
-        if len(row) >= 2 and row[1].strip() == today_str:
-            return  # 오늘 이미 기록된 행이 있음 - 오늘 첫 폴링이 아니므로 스킵
     yesterday = today - timedelta(days=1)
+    spreadsheet = ws.spreadsheet
     for name in CONTRACT_RULES:
         try:
             old_symbol = get_symbol(name, yesterday)
@@ -565,9 +564,14 @@ def check_rollover_alerts(ws, now: datetime):
         except Exception as e:
             print(f"   ⚠️ [{name}] 롤오버 확인 오류: {e}")
             continue
-        if old_symbol != new_symbol:
-            print(f"🔄 [{name}] 월물 자동 롤오버 감지: {old_symbol} → {new_symbol}")
-            alert_symbol_rolled(name, old_symbol, new_symbol)
+        if old_symbol == new_symbol:
+            continue
+        label = f"월물롤오버_{name}"
+        if is_reminder_sent(spreadsheet, today_str, label):
+            continue
+        print(f"🔄 [{name}] 월물 자동 롤오버 감지: {old_symbol} → {new_symbol}")
+        alert_symbol_rolled(name, old_symbol, new_symbol)
+        mark_reminder_sent(spreadsheet, today_str, label)
 
 
 def main():
