@@ -1,0 +1,107 @@
+name: "임시 진단 - 최근 일주일 시간대별 변동 비교"
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: "패키지 설치"
+        run: pip install requests pytz
+      - name: "최근 일주일 시간대별 변동 비교"
+        run: |
+          python3 << 'PYEOF'
+          import sys, json
+          from datetime import datetime, timedelta, date
+          import requests, pytz
+
+          sys.path.insert(0, ".")
+          from contract_roll import get_symbol
+
+          KST = pytz.timezone("Asia/Seoul")
+          HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+          today = datetime.now(KST).date()
+
+          # 최근 6 거래일(주말 제외) - 오늘 포함
+          days = []
+          d = today
+          while len(days) < 6:
+              if d.weekday() < 5:
+                  days.append(d)
+              d -= timedelta(days=1)
+          days.reverse()
+
+          names = ["나스닥", "오일", "골드"]
+          hour_buckets = [(7,8),(8,9),(9,10),(10,11),(11,12)]
+
+          for name in names:
+              print(f"\n\n########## {name} ##########")
+              for day in days:
+                  try:
+                      symbol = get_symbol(name, day)
+                  except Exception as e:
+                      print(f"{day}: get_symbol 오류 {e}")
+                      continue
+                  day_start = KST.localize(datetime(day.year, day.month, day.day, 7, 0))
+                  window_end = KST.localize(datetime(day.year, day.month, day.day, 12, 0))
+                  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                  period1 = int(day_start.astimezone(pytz.UTC).timestamp())
+                  period2 = int(window_end.astimezone(pytz.UTC).timestamp()) + 60
+                  params = {"period1": period1, "period2": period2, "interval": "5m"}
+                  try:
+                      res = requests.get(url, headers=HEADERS, params=params, timeout=15)
+                      data = res.json()
+                      result = data["chart"]["result"][0]
+                      timestamps = result.get("timestamp")
+                      if not timestamps:
+                          print(f"{day} ({symbol}): 데이터 없음")
+                          continue
+                      quote = result["indicators"]["quote"][0]
+                      bars = []
+                      for i, ts in enumerate(timestamps):
+                          if ts is None:
+                              continue
+                          bt = datetime.fromtimestamp(ts, tz=pytz.UTC).astimezone(KST)
+                          h, l = quote["high"][i], quote["low"][i]
+                          if h is None or l is None:
+                              continue
+                          bars.append((bt, h, l))
+                      if not bars:
+                          print(f"{day} ({symbol}): 유효 bar 없음")
+                          continue
+
+                      line = f"{day}({day.strftime('%a')}) {symbol:14s}"
+                      full_high = max(h for _, h, _ in bars)
+                      full_low = min(l for _, _, l in bars)
+                      full_range = full_high - full_low
+                      bucket_ranges = []
+                      for hs, he in hour_buckets:
+                          bs = KST.localize(datetime(day.year, day.month, day.day, hs, 0))
+                          be = KST.localize(datetime(day.year, day.month, day.day, he, 0))
+                          seg = [(bt,h,l) for bt,h,l in bars if bs <= bt < be]
+                          if not seg:
+                              bucket_ranges.append(None)
+                              continue
+                          bh = max(h for _,h,_ in seg)
+                          bl = min(l for _,_,l in seg)
+                          bucket_ranges.append(bh - bl)
+                      # 최대 변동 시간대 찾기
+                      valid = [(i, r) for i, r in enumerate(bucket_ranges) if r is not None]
+                      if valid:
+                          max_idx, max_val = max(valid, key=lambda x: x[1])
+                          max_label = f"{hour_buckets[max_idx][0]:02d}-{hour_buckets[max_idx][1]:02d}시"
+                      else:
+                          max_label = "N/A"
+                      bucket_str = " | ".join(
+                          f"{hs:02d}-{he:02d}시:{(f'{r:.2f}' if r is not None else 'N/A')}"
+                          for (hs,he), r in zip(hour_buckets, bucket_ranges)
+                      )
+                      print(f"{line}  전체(07-12)범위={full_range:.2f}  [{bucket_str}]  => 최대변동시간대: {max_label}")
+                  except Exception as e:
+                      print(f"{day} ({symbol}): 오류 {e}")
+
+          PYEOF
