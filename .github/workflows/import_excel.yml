@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "incoming/**.xlsx"
+      - "incoming/**.xls"
   workflow_dispatch:
 
 permissions:
@@ -25,14 +26,24 @@ jobs:
       - name: 구글 인증 토큰 복원
         run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
 
-      - name: incoming 폴더의 xlsx 전부 처리
+      - name: incoming 폴더의 xlsx/xls 전부 처리
         run: |
           mkdir -p imported
           shopt -s nullglob
-          for f in incoming/*.xlsx; do
+          for f in incoming/*.xlsx incoming/*.xls; do
             echo "=== 처리 중: $f ==="
             python gh_actions_import_excel.py "$f"
-            git mv "$f" "imported/$(basename "$f")"
+            base="$(basename "$f")"
+            dest="imported/$base"
+            if [ -e "$dest" ]; then
+              # 2026-08-31 수정: 같은 이름 파일이 이미 imported/에 있으면 git mv가
+              # "destination exists"로 실패하던 버그 → 타임스탬프를 붙여서 겹치지 않게 함
+              ts="$(date +%Y%m%d%H%M%S)"
+              name="${base%.*}"
+              ext="${base##*.}"
+              dest="imported/${name}_${ts}.${ext}"
+            fi
+            git mv "$f" "$dest"
           done
 
       - name: 처리 결과 커밋 & 푸시
