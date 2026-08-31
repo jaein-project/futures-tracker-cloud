@@ -29,6 +29,9 @@ SCOPES = [
 SYMBOL_ORDER = ["나스닥", "오일", "골드", "천연가스", "구리", "유로", "엔화"]
 
 REMINDER_LOG_SHEET = "알림기록"  # 시트에 값을 기록하지 않는 순수 알림(예고/비교)의 중복 방지용 로그 탭
+DAILY_SUMMARY_SHEET = "일일요약"  # 2026-09-01 추가: 미장마감 시 아시아장초반 대비 최종 비교(Slack만 가던 것)를
+                                  # 영구 기록. Slack 알림은 3개월 지나면 삭제되므로, 같은 내용을 시트에도
+                                  # 구조화된 형태(날짜별 시가/종가/변동)로 보관해서 나중에도 조회/분석 가능하게 함.
 
 TICK_SIZE = {
     "나스닥":   1,
@@ -114,6 +117,46 @@ def mark_reminder_sent(spreadsheet, date_str, label):
         ws.append_row([date_str, label, now_str], value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"   ⚠️ 알림기록 시트 기록 오류: {e}")
+
+
+def _get_or_create_daily_summary_ws(spreadsheet):
+    """'일일요약' 탭이 없으면 새로 만들어서 반환 (2026-09-01 신설).
+    종목별로 [시가(아시아장초반)/종가(미장후)/변동] 3열씩 묶어서 헤더를 구성함."""
+    try:
+        return spreadsheet.worksheet(DAILY_SUMMARY_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(
+            title=DAILY_SUMMARY_SHEET, rows=2000, cols=1 + len(SYMBOL_ORDER) * 3
+        )
+        header = ["날짜"]
+        for name in SYMBOL_ORDER:
+            header += [f"{name}_시가(아시아장초반)", f"{name}_종가(미장후)", f"{name}_변동"]
+        ws.append_row(header, value_input_option="USER_ENTERED")
+        return ws
+
+
+def append_daily_summary(spreadsheet, date_str, first_row, last_row):
+    """미장마감(미장후) 시점에 하루 첫 체크포인트(아시아장초반) 대비 최종 비교를 '일일요약' 탭에 영구
+    기록 (2026-09-01부터 적용). Slack의 alert_daily_summary와 완전히 동일한 값을 사용하되, Slack은
+    3개월 후 삭제되므로 여기에 종목별 시가/종가/변동을 구조화된 숫자로 남겨서 나중에도 조회·분석 가능하게 함.
+
+    first_row: ws.get_all_values()로 읽은 아시아장초반의 원본 시트 행 (A열 빈칸 → 인덱스 1칸 밀림)
+    last_row : build_row()로 만든 미장후의 로컬 행 (밀림 없음) - format_ticks_comparison과 동일한 인덱싱
+    """
+    try:
+        ws = _get_or_create_daily_summary_ws(spreadsheet)
+        row = [date_str]
+        for idx, name in enumerate(SYMBOL_ORDER):
+            first_val = first_row[3 + idx] if len(first_row) > 3 + idx else ""
+            last_val = last_row[2 + idx] if len(last_row) > 2 + idx else ""
+            try:
+                diff = int(last_val) - int(first_val)
+            except (ValueError, TypeError):
+                diff = ""
+            row += [first_val, last_val, diff]
+        ws.append_row(row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"   ⚠️ 일일요약 시트 기록 오류: {e}")
 
 
 def _record_data_inner(data: dict, timing: str, note: str = ""):
