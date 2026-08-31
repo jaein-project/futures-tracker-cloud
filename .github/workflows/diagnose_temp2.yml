@@ -1,0 +1,19 @@
+name: TEMP 경제발표 8-9월 전체 덤프
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 패키지 설치
+        run: pip install -r requirements-cloud.txt
+      - name: 구글 인증 토큰 복원
+        run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
+      - name: 8-9월 전체 덤프
+        run: python dump_range_temp.py
