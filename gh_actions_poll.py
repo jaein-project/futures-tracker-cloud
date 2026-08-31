@@ -219,6 +219,22 @@ def _parse_korean_time_to_minutes(s: str):
         h = 0
     return h * 60 + mi
 
+# 2026-09-01 추가: 진폭 반복(중복) 감지에서 "아시아장만 계속 반복"인 경우는 알림 생략용.
+# 아시아장 체크포인트 4개(아시아장초반/중반/중/마감전)는 서머타임과 무관하게 항상 같은 시각.
+ASIA_CHECKPOINT_MINUTES = [9 * 60, 10 * 60 + 30, 12 * 60, 15 * 60 + 20]
+
+def _time_is_asia_checkpoint(time_str: str) -> bool:
+    """이 시간 문자열이 아시아장 체크포인트(아시아장초반/중반/중/아시아마감전) 중
+    하나에 해당하는지 확인 (유럽개장전/미장전/미장후는 False)"""
+    m = _parse_korean_time_to_minutes((time_str or "").strip())
+    if m is None:
+        return False
+    for t in ASIA_CHECKPOINT_MINUTES:
+        diff = min(abs(m - t), 1440 - abs(m - t))
+        if diff <= CHECK_WINDOW_MINUTES:
+            return True
+    return False
+
 LOOKBACK_DAYS = 3  # 오늘 포함 최근 며칠치를 매번 재확인할지 (하루 전체가 통째로 안 돌았을 경우 대비)
 
 def checkpoint_already_recorded_cached(all_values, date_str: str, target_dt: datetime) -> bool:
@@ -244,6 +260,11 @@ def check_duplicate_streak(all_values, new_row, threshold=3):
     """같은 값이 threshold번 이상 연속으로 기록되면 Slack 알림
     (경제발표/백필처럼 비고가 있는 행은 스트릭 계산에서 제외)
     2번 정도는 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 (2026-08-26 기준 변경)
+
+    2026-09-01 추가: 반복 구간에 해당하는 체크포인트가 전부 아시아장(아시아장초반/중반/중/
+    아시아마감전)이면 알림을 생략함 - 아시아장은 원래 변동이 작아서 값이 반복되는 게 자연스러움.
+    반대로 유럽개장전/미장전/미장후(미장마감)가 하나라도 섞여 있으면(=순수 아시아장 반복이
+    아니면) 그대로 알림 - 이 세션들에서 값이 반복되는 건 드물고 눈여겨볼 신호이기 때문.
     """
     from alerts import alert_duplicate_streak
     for idx, name in enumerate(SYMBOL_ORDER):
@@ -252,6 +273,7 @@ def check_duplicate_streak(all_values, new_row, threshold=3):
         if new_val == "" or new_val is None:
             continue
         streak = 1
+        all_asia = _time_is_asia_checkpoint(new_row[1])
         for old_row in reversed(all_values[2:]):
             if len(old_row) <= 10 or old_row[10].strip():
                 continue
@@ -259,9 +281,13 @@ def check_duplicate_streak(all_values, new_row, threshold=3):
                 continue
             if str(old_row[col]) == str(new_val):
                 streak += 1
+                all_asia = all_asia and _time_is_asia_checkpoint(old_row[2])
             else:
                 break
         if streak >= threshold:
+            if all_asia:
+                print(f"   ℹ️ [{name}] {streak}회 연속 동일값({new_val}) - 전부 아시아장 체크포인트라 알림 생략")
+                continue
             alert_duplicate_streak(name, new_val, streak)
 
 def process_checkpoints(ws, now: datetime):
