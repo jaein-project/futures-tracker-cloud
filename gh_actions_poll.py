@@ -330,13 +330,29 @@ def process_checkpoints(ws, now: datetime):
                 # "다음 날짜"로 찍히고, 그 직후 오는 체크포인트(예: 미장후)가 "거래일 경계"로 오인해서
                 # 비교 자체를 건너뛰어 화살표가 통째로 사라지는 버그가 있었음. 경제발표 행(비고 있음)은
                 # 건너뛰고 가장 최근 "체크포인트" 행만 비교 대상으로 찾도록 수정.
+                # 2026-08-31 재수정: "배열상 마지막 행"을 직전 체크포인트로 보면, 체크포인트를
+                # 스케줄 중간에 새로 추가한 날(예: 아시아장초반/아시아장중반을 09:00/10:30에 처음
+                # 끼워넣은 날)에는 그 두 체크포인트가 LOOKBACK_DAYS 백필로 "나중에" 시트에 append돼서
+                # 이미 기록돼 있던 아시아장중(12:00)보다 배열상 뒤에 오는 역전 현상이 생김. 그러면
+                # 아시아장초반이 "배열상 직전 행"인 유럽개장전(15:55)과 잘못 비교되어 화살표가 붙어버림.
+                # → 배열 위치가 아니라 "이 체크포인트 스케줄상 바로 앞 타이밍"을 스케줄 dict 순서로
+                #   직접 찾아서, 그 타이밍의 정확한 시각 문자열(time_str)로 매칭되는 행을 찾도록 변경.
+                #   하루의 첫 체크포인트(아시아장초반)는 앞 타이밍이 없으므로 항상 prev_row=None.
                 prev_row = None
-                for r in reversed(all_values[2:]):
-                    if len(r) > 10 and r[10].strip():
-                        continue  # 비고가 있는 행(경제발표 등)은 비교 대상에서 제외
-                    if len(r) > 1 and r[1].strip() == date_str:
-                        prev_row = r
-                    break  # 체크포인트 행을 찾으면 날짜가 맞든 안 맞든 그 시점에서 멈춤(진짜 거래일 경계 판단)
+                sched_keys = list(sched.keys())
+                cur_idx = sched_keys.index(timing)
+                if cur_idx > 0:
+                    prev_timing = sched_keys[cur_idx - 1]
+                    ph, pm = map(int, sched[prev_timing].split(":"))
+                    prev_time_str = time_str_from(
+                        KST.localize(datetime(record_date.year, record_date.month, record_date.day, ph, pm))
+                    )
+                    for r in all_values[2:]:
+                        if len(r) > 10 and r[10].strip():
+                            continue  # 비고가 있는 행(경제발표 등)은 비교 대상에서 제외
+                        if len(r) > 1 and r[1].strip() == date_str and len(r) > 2 and r[2].strip() == prev_time_str:
+                            prev_row = r
+                            break
                 detail = format_ticks_detail(row, prev_row)
                 time_hhmm = target_dt.strftime("%H:%M")
                 alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
@@ -349,12 +365,23 @@ def process_checkpoints(ws, now: datetime):
                 all_values.append([""] + row)
 
                 # 2026-08-26 추가: 미장후(하루의 마지막 체크포인트) 기록이 끝나면
-                # ① 하루 마감 요약 알림(하루 첫 체크포인트 대비 미장마감 - 2026-08-31부터
-                #    day_rows[0]이 자동으로 "아시아장초반"(09:00)이 됨) ② 내일이 완전휴장일이면 예고 안내
+                # ① 하루 마감 요약 알림(하루 첫 체크포인트 대비 미장마감) ② 내일이 완전휴장일이면 예고 안내
+                # 2026-08-31 재수정: day_rows[0](배열상 첫 행)은 위 prev_row와 같은 이유로
+                # "아시아장초반"이 아닐 수 있음 - 스케줄의 첫 타이밍(현재 "아시아장초반" 09:00)의
+                # 정확한 시각 문자열로 직접 매칭해서 first_row를 찾도록 변경. 혹시 못 찾으면(과거
+                # 데이터 등) 기존 방식(배열상 첫 행)으로 안전하게 폴백.
                 if timing == "미장후":
                     day_rows = [r for r in all_values if len(r) > 1 and r[1].strip() == date_str]
                     if len(day_rows) >= 2:
-                        first_row = day_rows[0]
+                        first_timing, first_hhmm = next(iter(sched.items()))
+                        fh, fm = map(int, first_hhmm.split(":"))
+                        first_time_str = time_str_from(
+                            KST.localize(datetime(record_date.year, record_date.month, record_date.day, fh, fm))
+                        )
+                        first_row = next(
+                            (r for r in day_rows if len(r) > 2 and r[2].strip() == first_time_str),
+                            day_rows[0],
+                        )
                         comparison = format_ticks_comparison(first_row, row)
                         from alerts import alert_daily_summary
                         alert_daily_summary(date_str, comparison)
