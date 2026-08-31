@@ -15,5 +15,5 @@ jobs:
         run: pip install -r requirements-cloud.txt
       - name: 구글 인증 토큰 복원
         run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
-      - name: 의미기반 중복 검증
-        run: python semantic_dup_temp.py
+      - name: 삭제 대상 목록 산출
+        run: python plan_delete_temp.py
