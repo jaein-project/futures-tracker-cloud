@@ -61,6 +61,22 @@ FULL_HOLIDAYS_KST = {
     _date(2026, 11, 26): "추수감사절",
     _date(2026, 12, 25): "크리스마스",
 }
+
+# 2026-09-01 추가: 완전휴장은 아니지만 일부 상품군만 조기종료(이른 새벽 청산)하는 날.
+# 완전휴장일과 달리 진폭 기록/체크포인트 로직은 전혀 건드리지 않고(계속 정상 거래일로 취급),
+# 당일/전날 Slack 안내만 보냄 - 재인님이 캡처해준 영웅문 [0097] 해외파생 휴장공지 기준.
+# 출처: 영웅문 HTS "해외파생 휴장공지" 팝업 (2026년 9월)
+# ※ 9/21~23 오사카거래소(OSE) 휴장은 우리가 추적하는 7개 종목(전부 CME 상품)과 무관해서 대상 제외.
+EARLY_CLOSE_KST = {
+    _date(2026, 9, 7): {
+        "name": "미국 노동절",
+        "detail": (
+            "· 지수(나스닥) : 새벽 02:00 KST 조기종료\n"
+            "· 에너지·금속(오일/골드/천연가스/구리) : 새벽 03:30 KST 조기종료\n"
+            "· 통화(유로/엔화) : 정상거래 (영향 없음)"
+        ),
+    },
+}
 CHECK_WINDOW_MINUTES = 30  # 정기 체크포인트 중복 확인용 시간 창
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -324,6 +340,12 @@ def process_checkpoints(ws, now: datetime):
                     process_full_holiday_today(ws, date_str, holiday_name)
                 continue
 
+            # 2026-09-01 추가: 조기종료일은 완전휴장이 아니므로 기록을 스킵하지 않고(continue 없음),
+            # 하루 첫 체크포인트 시점에만 참고용 안내를 1회 보내고 그대로 정상 기록을 이어감.
+            early_close = EARLY_CLOSE_KST.get(record_date.date())
+            if early_close and timing == next(iter(sched)):
+                process_early_close_today(ws, date_str, early_close)
+
             day_start = trading_day_start(target_dt)
             if checkpoint_already_recorded_cached(all_values, date_str, target_dt):
                 continue
@@ -420,6 +442,9 @@ def process_checkpoints(ws, now: datetime):
                     tomorrow_holiday = FULL_HOLIDAYS_KST.get(tomorrow)
                     if tomorrow_holiday:
                         process_full_holiday_tomorrow(ws, tomorrow, tomorrow_holiday)
+                    tomorrow_early_close = EARLY_CLOSE_KST.get(tomorrow)
+                    if tomorrow_early_close:
+                        process_early_close_tomorrow(ws, tomorrow, tomorrow_early_close)
             else:
                 print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
 
@@ -447,6 +472,33 @@ def process_full_holiday_tomorrow(ws, tomorrow: _date, holiday_name: str):
     if is_reminder_sent(spreadsheet, tomorrow_str, label):
         return
     alert_full_holiday_tomorrow(tomorrow_str, holiday_name)
+    mark_reminder_sent(spreadsheet, tomorrow_str, label)
+
+
+def process_early_close_today(ws, date_str: str, info: dict):
+    """조기종료일 당일 - 하루 첫 체크포인트 시점에만 1회, #trading-notify로 참고 안내
+    (알림기록 탭으로 중복 방지). 완전휴장일과 달리 기록 스킵 없이 정상 진행 - 2026-09-01 신규."""
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from alerts import alert_early_close_today
+    spreadsheet = ws.spreadsheet
+    label = "조기종료_당일안내"
+    if is_reminder_sent(spreadsheet, date_str, label):
+        return
+    alert_early_close_today(date_str, info["name"], info["detail"])
+    mark_reminder_sent(spreadsheet, date_str, label)
+
+
+def process_early_close_tomorrow(ws, tomorrow: _date, info: dict):
+    """조기종료일 전날 - 미장후(+하루 마감 요약) 알림이 끝난 뒤 #trading-notify로 예고
+    (알림기록 탭으로 중복 방지) - 2026-09-01 신규."""
+    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from alerts import alert_early_close_tomorrow
+    tomorrow_str = f"{tomorrow.year}. {tomorrow.month}. {tomorrow.day}"
+    spreadsheet = ws.spreadsheet
+    label = "조기종료_전날예고"
+    if is_reminder_sent(spreadsheet, tomorrow_str, label):
+        return
+    alert_early_close_tomorrow(tomorrow_str, info["name"], info["detail"])
     mark_reminder_sent(spreadsheet, tomorrow_str, label)
 
 

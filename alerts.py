@@ -305,6 +305,28 @@ def alert_unexpected_no_trading(date_str: str, timing: str):
     )
 
 
+def alert_early_close_today(date_str: str, name: str, detail: str):
+    """조기종료일 당일, 하루 첫 체크포인트 시점에 1회 - #trading-notify 로 참고용 안내만 발송.
+    완전휴장일과 달리 진폭 기록/체크포인트는 평소처럼 정상 진행됨 (기록 로직 변경 없음) - 2026-09-01 신규."""
+    send_alert(
+        f"오늘({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
+        f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
+        title="⏰ [조기종료 안내]",
+        webhook_env_var=WEBHOOK_ENV_VAR,
+    )
+
+
+def alert_early_close_tomorrow(date_str: str, name: str, detail: str):
+    """조기종료일 전날, 미장후(+하루 마감 요약) 알림 이후 - #trading-notify 로 예고.
+    2026-09-01 신규."""
+    send_alert(
+        f"내일({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
+        f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
+        title="⏰ [조기종료 예고]",
+        webhook_env_var=WEBHOOK_ENV_VAR,
+    )
+
+
 def alert_holiday_calendar_reminder(tier: str):
     """연말 CME 다음해 휴장일 캘린더 갱신 리마인더 - #trading-notify, 12월 초/중순/말 3회.
     tier: 'early' | 'mid' | 'final'"""
