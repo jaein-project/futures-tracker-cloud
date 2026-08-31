@@ -1,8 +1,8 @@
 """
 GitHub Actions 전용 통합 스크립트 - 5분마다 실행
-- 하루 4회 체크포인트(아시아마감전/유럽개장전/미장전/미장후) + 경제발표 전/후 5분을
-  전부 이 한 스크립트가 5분마다 확인해서, "목표 시각이 지났는데 아직 기록 안 된 것"이 있으면
-  그때그때 Yahoo Finance 분봉 데이터로 정확한 값을 역산해서 채움
+- 하루 7회 체크포인트(아시아장초반/아시아장중반/아시아장중/아시아마감전/유럽개장전/미장전/미장후)
+  + 경제발표 전/후 5분을 전부 이 한 스크립트가 5분마다 확인해서, "목표 시각이 지났는데
+  아직 기록 안 된 것"이 있으면 그때그때 Yahoo Finance 분봉 데이터로 정확한 값을 역산해서 채움
 기존에 특정 cron 시각(예: 22:25)에만 의존하던 방식은 GitHub 무료 스케줄의 지연/누락에 취약해서,
 5분마다 계속 폴링하며 "놓친 게 있으면 바로 잡는" 방식으로 통합함.
 
@@ -21,7 +21,19 @@ from google_sheet import get_client, SPREADSHEET_ID, SHEET_NAME, SYMBOL_ORDER, c
 from economic_calendar import get_today_event_groups
 
 KST = pytz.timezone("Asia/Seoul")
+# 2026-08-31 추가: 아시아장중(12:00) 하나만으로는 07:00~12:00 사이 언제 진폭이
+# 커졌는지 알 수가 없어서(나스닥/오일/골드가 최근 아시아장에서 크게 움직이는 게
+# 눈에 띄어 최근 일주일치를 시간대별로 직접 비교해봄), 그 사이에 두 개를 더 끼워넣음.
+# 실측 결과(8/24~8/28, 8/31, 6거래일): 07-08시는 세 종목 다 가장 조용했고,
+# 나스닥은 09-10시에 가장 크게 움직이는 게 압도적으로 우세(6일 중 5일 1위),
+# 오일/골드는 그보다 늦은 10-11시·11-12시에 가장 크게 움직이는 날이 많았음.
+# 그래서 나스닥의 조기 반응을 잡는 09:00("아시아장초반")과, 오일/골드가
+# 본격적으로 움직이기 시작하는 구간 직전인 10:30("아시아장중반") 두 시점을 추가.
+# 딕셔너리 순서 = 그날 실제 처리 순서(시간순)로 유지해야 함 - 아래 process_checkpoints()가
+# "그날 첫 체크포인트" 판단을 dict의 첫 키로 하기 때문.
 SUMMER_SCHEDULE = {
+    "아시아장초반": "09:00",
+    "아시아장중반": "10:30",
     "아시아장중":   "12:00",
     "아시아마감전": "15:20",
     "유럽개장전":   "15:55",
@@ -29,6 +41,8 @@ SUMMER_SCHEDULE = {
     "미장후":       "05:05",
 }
 WINTER_SCHEDULE = {
+    "아시아장초반": "09:00",
+    "아시아장중반": "10:30",
     "아시아장중":   "12:00",
     "아시아마감전": "15:20",
     "유럽개장전":   "15:55",
@@ -274,11 +288,13 @@ def process_checkpoints(ws, now: datetime):
             record_date = target_dt - timedelta(days=1) if timing == "미장후" else target_dt
             date_str = f"{record_date.year}. {record_date.month}. {record_date.day}"
 
-            # 2026-08-26 추가: 완전휴장일이면 기록 자체를 스킵. 하루의 첫 체크포인트인 "아시아장중"
-            # 시점에만 안내 알림을 1회 보내고, 나머지 4개 체크포인트는 조용히 스킵함.
+            # 2026-08-26 추가: 완전휴장일이면 기록 자체를 스킵. 하루의 첫 체크포인트
+            # (2026-08-31부터는 "아시아장초반" 09:00 - sched의 첫 키를 그대로 씀,
+            # 나중에 스케줄 순서가 또 바뀌어도 자동으로 맞음) 시점에만 안내 알림을
+            # 1회 보내고, 나머지 체크포인트는 조용히 스킵함.
             holiday_name = FULL_HOLIDAYS_KST.get(record_date.date())
             if holiday_name:
-                if timing == "아시아장중":
+                if timing == next(iter(sched)):
                     process_full_holiday_today(ws, date_str, holiday_name)
                 continue
 
@@ -333,7 +349,8 @@ def process_checkpoints(ws, now: datetime):
                 all_values.append([""] + row)
 
                 # 2026-08-26 추가: 미장후(하루의 마지막 체크포인트) 기록이 끝나면
-                # ① 하루 마감 요약 알림(아시아장중 대비 미장마감) ② 내일이 완전휴장일이면 예고 안내
+                # ① 하루 마감 요약 알림(하루 첫 체크포인트 대비 미장마감 - 2026-08-31부터
+                #    day_rows[0]이 자동으로 "아시아장초반"(09:00)이 됨) ② 내일이 완전휴장일이면 예고 안내
                 if timing == "미장후":
                     day_rows = [r for r in all_values if len(r) > 1 and r[1].strip() == date_str]
                     if len(day_rows) >= 2:
@@ -350,7 +367,7 @@ def process_checkpoints(ws, now: datetime):
                 print(f"   ❌ [{timing}] 전 종목 데이터 없음 - 기록 취소")
 
 def process_full_holiday_today(ws, date_str: str, holiday_name: str):
-    """완전휴장일 당일 - 하루의 첫 체크포인트인 '아시아장중' 시점에만 1회 안내
+    """완전휴장일 당일 - 하루의 첫 체크포인트(2026-08-31부터 '아시아장초반' 09:00) 시점에만 1회 안내
     (#futures-tracker + #trading-notify 동시발송, 알림기록 탭으로 중복 방지) - 2026-08-26 신규"""
     from google_sheet import is_reminder_sent, mark_reminder_sent
     from alerts import alert_full_holiday_today
