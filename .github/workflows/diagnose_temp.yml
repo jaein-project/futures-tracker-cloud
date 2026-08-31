@@ -1,0 +1,23 @@
+name: diagnose_temp
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "패키지 설치"
+        run: pip install -r requirements-cloud.txt
+
+      - name: "구글 인증 토큰 복원"
+        run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
+
+      - name: "일일요약 탭 생성/기록 검증"
+        run: python verify_temp.py
