@@ -1,18 +1,20 @@
 import sys
 sys.path.insert(0, ".")
-from google_sheet import get_client, SPREADSHEET_ID, append_daily_summary, DAILY_SUMMARY_SHEET
+from google_sheet import get_client, SPREADSHEET_ID, DAILY_SUMMARY_SHEET
 
 client = get_client()
 ss = client.open_by_key(SPREADSHEET_ID)
-
-TEST_DATE = "__TEST_DELETE_ME__"
-first_row = ["", TEST_DATE, "오전 9:00:00", "206", "86", "314", "48", "30", "9", "4"]
-last_row = [TEST_DATE, "오전 5:05:00", "375", "153", "1930", "96", "118", "88", "36", ""]
-
-append_daily_summary(ss, TEST_DATE, first_row, last_row)
-
 ws = ss.worksheet(DAILY_SUMMARY_SHEET)
 values = ws.get_all_values()
-print(f"'일일요약' 탭 총 행 수: {len(values)}")
-print("헤더:", values[0])
-print("마지막 행(테스트 데이터):", values[-1])
+
+for i, row in enumerate(values):
+    if row and row[0] == "__TEST_DELETE_ME__":
+        ws.delete_rows(i + 1)  # gspread는 1-based 행 번호
+        print(f"테스트 행(시트 {i+1}행) 삭제 완료")
+        break
+else:
+    print("테스트 행을 찾지 못함 (이미 삭제됐을 수 있음)")
+
+print("최종 상태:")
+for row in ws.get_all_values():
+    print(row)
