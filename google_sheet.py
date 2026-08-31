@@ -29,9 +29,10 @@ SCOPES = [
 SYMBOL_ORDER = ["나스닥", "오일", "골드", "천연가스", "구리", "유로", "엔화"]
 
 REMINDER_LOG_SHEET = "알림기록"  # 시트에 값을 기록하지 않는 순수 알림(예고/비교)의 중복 방지용 로그 탭
-DAILY_SUMMARY_SHEET = "일일요약"  # 2026-09-01 추가: 미장마감 시 아시아장초반 대비 최종 비교(Slack만 가던 것)를
+DAILY_SUMMARY_SHEET = "진폭_일일요약"  # 2026-09-01 추가: 미장마감 시 아시아장초반 대비 최종 비교(Slack만 가던 것)를
                                   # 영구 기록. Slack 알림은 3개월 지나면 삭제되므로, 같은 내용을 시트에도
                                   # 구조화된 형태(날짜별 시가/종가/변동)로 보관해서 나중에도 조회/분석 가능하게 함.
+                                  # (탭 이름은 재인님이 시트가 늘어나도 헷갈리지 않도록 "진폭_일일요약"으로 지정)
 
 TICK_SIZE = {
     "나스닥":   1,
@@ -120,7 +121,7 @@ def mark_reminder_sent(spreadsheet, date_str, label):
 
 
 def _get_or_create_daily_summary_ws(spreadsheet):
-    """'일일요약' 탭이 없으면 새로 만들어서 반환 (2026-09-01 신설).
+    """'진폭_일일요약' 탭이 없으면 새로 만들어서 반환 (2026-09-01 신설).
     종목별로 [시가(아시아장초반)/종가(미장후)/변동] 3열씩 묶어서 헤더를 구성함."""
     try:
         return spreadsheet.worksheet(DAILY_SUMMARY_SHEET)
@@ -136,7 +137,7 @@ def _get_or_create_daily_summary_ws(spreadsheet):
 
 
 def append_daily_summary(spreadsheet, date_str, first_row, last_row):
-    """미장마감(미장후) 시점에 하루 첫 체크포인트(아시아장초반) 대비 최종 비교를 '일일요약' 탭에 영구
+    """미장마감(미장후) 시점에 하루 첫 체크포인트(아시아장초반) 대비 최종 비교를 '진폭_일일요약' 탭에 영구
     기록 (2026-09-01부터 적용). Slack의 alert_daily_summary와 완전히 동일한 값을 사용하되, Slack은
     3개월 후 삭제되므로 여기에 종목별 시가/종가/변동을 구조화된 숫자로 남겨서 나중에도 조회·분석 가능하게 함.
 
@@ -156,7 +157,7 @@ def append_daily_summary(spreadsheet, date_str, first_row, last_row):
             row += [first_val, last_val, diff]
         ws.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
-        print(f"   ⚠️ 일일요약 시트 기록 오류: {e}")
+        print(f"   ⚠️ 진폭_일일요약 시트 기록 오류: {e}")
 
 
 def _record_data_inner(data: dict, timing: str, note: str = ""):

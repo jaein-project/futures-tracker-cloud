@@ -386,7 +386,7 @@ def process_checkpoints(ws, now: datetime):
                         from alerts import alert_daily_summary
                         alert_daily_summary(date_str, comparison)
                         # 2026-09-01 추가: Slack 알림은 3개월 지나면 사라지므로, 같은 비교 내용을
-                        # '일일요약' 탭에도 영구 기록 (날짜별 시가/종가/변동을 구조화된 숫자로 보관)
+                        # '진폭_일일요약' 탭에도 영구 기록 (날짜별 시가/종가/변동을 구조화된 숫자로 보관)
                         from google_sheet import append_daily_summary
                         append_daily_summary(ws.spreadsheet, date_str, first_row, row)
 
