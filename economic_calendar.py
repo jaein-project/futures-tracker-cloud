@@ -221,11 +221,14 @@ def get_today_event_groups():
             "date": date,
             "time": time_hm,
             "names": names,
-            "label_reminder": f"미국_{short_label}_10분전",
             "label_pre": f"미국_{short_label}_전",
             "label_post": f"미국_{short_label}_후",
+            # 2026-09-02 수정: '1분 전' 창(1분 폭)이 5분 주기 폴링(GitHub 기본 스케줄 + 외부
+            # cron-job.org)보다 좁아서 구조적으로 거의 발송이 안 되던 문제 - 재인님 확인 후
+            # '1분 전' 삭제하고 '15분 전'을 추가해서 15/10/5분 전 3단계로 재편성.
+            # 각 창이 정확히 5분 폭이라 5분 주기 폴링과 맞물려 안정적으로 걸림.
+            "reminder15_dt": event_dt - timedelta(minutes=15),
             "reminder_dt": event_dt - timedelta(minutes=10),
-            "one_min_dt": event_dt - timedelta(minutes=1),
             "before_dt": event_dt - timedelta(minutes=5),
             "after_dt": event_dt + timedelta(minutes=5),
             "compare_dt": event_dt + timedelta(minutes=20),

@@ -579,13 +579,16 @@ def process_economic(ws, now: datetime):
 
 
 def process_reminder_tiers(ws, now: datetime, g: dict, date_str: str):
-    """중요 경제발표 임박 예고 - 10분 전 / 5분 전 / 1분 전, 시트에는 기록하지 않는 순수 알림.
-    (기존에는 '10분전'만 시트에 기록하며 예고했는데, 2026-08-26부터 순수 알림 3단계로 교체)"""
+    """중요 경제발표 임박 예고 - 15분 전 / 10분 전 / 5분 전, 시트에는 기록하지 않는 순수 알림.
+    (2026-08-26: '10분전'만 시트에 기록 -> 순수 알림 3단계(10/5/1분전)로 교체
+     2026-09-02: '1분 전' 창이 폭 1분이라 5분 주기 폴링으로는 구조적으로 거의 못 걸려서
+     실제로 22:59 같은 1분전 시점 예고가 누락되는 버그 확인 -> '1분 전' 삭제, '15분 전' 신설.
+     이제 각 단계 사이 간격이 전부 5분이라 5분 주기 폴링과 정확히 맞물려서 안정적으로 걸림)"""
     from alerts import alert_reminder_tier
     from google_sheet import is_reminder_sent, mark_reminder_sent
     event_dt = KST.localize(datetime.strptime(f"{g['date']} {g['time']}", "%Y/%m/%d %H:%M"))
     spreadsheet = ws.spreadsheet
-    for tier_label, tier_dt in [("10분 전", g["reminder_dt"]), ("5분 전", g["before_dt"]), ("1분 전", g["one_min_dt"])]:
+    for tier_label, tier_dt in [("15분 전", g["reminder15_dt"]), ("10분 전", g["reminder_dt"]), ("5분 전", g["before_dt"])]:
         if now < tier_dt or now >= event_dt:
             continue  # 아직 그 시점이 안 됐거나, 발표가 이미 지나버려서 예고가 의미 없어짐
         label = f"{g['label_pre']}_{tier_label}예고"
