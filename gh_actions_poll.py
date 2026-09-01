@@ -655,11 +655,17 @@ def process_daily_digest(ws, now: datetime):
         return
 
     def _time_key(e):
+        # 2026-09-02 수정: 예전엔 시:분만 보고 정렬해서, 같은 거래일 안에 섞여 있는
+        # 다음날 새벽 발표(예: 9/2 05:30 API 재고)가 시각만 보면 숫자가 작다는 이유로
+        # 그날 밤 발표(9/1 23:00)보다 앞에 노출되는 버그가 있었음. 실제 날짜까지 함께
+        # 비교해서 진짜 시간 순서(9/1 23:00 -> 9/2 05:30)대로 나오도록 수정.
         parts = e["time"].strip().split(":")
         try:
-            return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+            hh = int(parts[0])
+            mm = int(parts[1]) if len(parts) > 1 else 0
         except Exception:
-            return (99, 99)
+            hh, mm = 99, 99
+        return (e["date"].strip(), hh, mm)
 
     events_sorted = sorted(events, key=_time_key)
     for e in events_sorted:
