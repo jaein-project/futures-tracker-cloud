@@ -5,6 +5,14 @@ on:
     - cron: "*/5 * * * *"   # 5분마다 - 놓친 체크포인트/경제발표가 있으면 그때그때 채움
   workflow_dispatch:
 
+# 2026-09-02 추가: GitHub 기본 5분 스케줄과 cron-job.org의 외부 workflow_dispatch(15분마다)가
+# 겹치는 시간대에 동시 실행되면, 둘 다 "아직 기록 안 됐다"는 같은 시트 상태를 보고
+# 같은 체크포인트를 중복으로 기록하는 버그가 있었음(8/31 09:00/10:30 중복 행).
+# 동시 실행을 막아서 항상 한 번에 하나씩만 돌게 함 (겹치면 새 실행이 이전 실행 끝날 때까지 대기).
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   poll:
     runs-on: ubuntu-latest
