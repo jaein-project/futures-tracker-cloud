@@ -1,0 +1,17 @@
+name: TEMP 구리 진폭 역검증 (9/1)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 패키지 설치
+        run: pip install -r requirements-cloud.txt
+      - name: 구리 진폭 역계산
+        run: python verify_copper_temp.py
