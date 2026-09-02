@@ -272,7 +272,7 @@ def checkpoint_already_recorded_cached(all_values, date_str: str, target_dt: dat
             return True
     return False
 
-def check_duplicate_streak(all_values, new_row, threshold=3):
+def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_dt, threshold=3):
     """같은 값이 threshold번 이상 연속으로 기록되면 Slack 알림
     (경제발표/백필처럼 비고가 있는 행은 스트릭 계산에서 제외)
     2번 정도는 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 (2026-08-26 기준 변경)
@@ -281,8 +281,14 @@ def check_duplicate_streak(all_values, new_row, threshold=3):
     아시아마감전)이면 알림을 생략함 - 아시아장은 원래 변동이 작아서 값이 반복되는 게 자연스러움.
     반대로 유럽개장전/미장전/미장후(미장마감)가 하나라도 섞여 있으면(=순수 아시아장 반복이
     아니면) 그대로 알림 - 이 세션들에서 값이 반복되는 건 드물고 눈여겨볼 신호이기 때문.
+
+    2026-09-02 추가: 알림을 보낸 체크포인트는 STREAK_RECHECK_DELAY_MINUTES(10분) 뒤
+    process_streak_rechecks()가 자동으로 한 번 더 재검증하도록 '반복감지_재검증' 탭에 등록함
+    (재인님 요청 - Yahoo Finance 데이터가 늦게 확정돼서 처음엔 낮게 기록되는 경우 대비).
     """
     from alerts import alert_duplicate_streak
+    from google_sheet import register_streak_recheck
+    date_str, time_str = new_row[0], new_row[1]
     for idx, name in enumerate(SYMBOL_ORDER):
         col = 3 + idx
         new_val = new_row[2 + idx]
@@ -305,6 +311,7 @@ def check_duplicate_streak(all_values, new_row, threshold=3):
                 print(f"   ℹ️ [{name}] {streak}회 연속 동일값({new_val}) - 전부 아시아장 체크포인트라 알림 생략")
                 continue
             alert_duplicate_streak(name, new_val, streak)
+            register_streak_recheck(spreadsheet, date_str, time_str, name, new_val, day_start, target_dt)
 
 def process_checkpoints(ws, now: datetime):
     sched = SUMMER_SCHEDULE if is_summer_time() else WINTER_SCHEDULE
@@ -368,7 +375,7 @@ def process_checkpoints(ws, now: datetime):
                 continue
 
             if any_data:
-                check_duplicate_streak(all_values, row)
+                check_duplicate_streak(all_values, row, ws.spreadsheet, day_start, target_dt)
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
                 from alerts import alert_checkpoint_recorded
@@ -709,6 +716,43 @@ def check_rollover_alerts(ws, now: datetime):
         mark_reminder_sent(spreadsheet, today_str, label)
 
 
+def process_streak_rechecks(ws):
+    """진폭 반복감지(3회 연속 동일값) 알림이 뜬 뒤 10분이 지난 체크포인트를 재검증.
+    2026-09-02 신규 (재인님 요청) - Yahoo Finance 5분봉이 방금 지나간 구간을 아직 확정 못 해서
+    처음엔 낮게 기록됐다가, 시간이 좀 지나면 실제 값이 올라오는 경우(엔화 22:25 사례)를 잡기 위함.
+    값이 그대로면 조용히 '완료-일치'로 표시하고 넘어가고, 값이 다르면 진폭 시트를 보정한 뒤
+    해당 종목만 따로 Slack 알림(alert_streak_recheck_correction)을 보냄."""
+    from google_sheet import get_due_streak_rechecks, mark_streak_recheck_done, update_amplitude_cell
+    from alerts import alert_streak_recheck_correction
+    spreadsheet = ws.spreadsheet
+    due = get_due_streak_rechecks(spreadsheet)
+    for item in due:
+        name = item["name"]
+        symbol, multiplier = SYMBOLS.get(name, (None, None))
+        if not symbol:
+            mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-조회실패")
+            continue
+        hl = get_intraday_high_low(symbol, item["day_start"], item["target_dt"], multiplier)
+        if not hl:
+            print(f"   ⚠️ [{name}] 재검증 조회 실패 - {item['date_str']} {item['time_str']}")
+            mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-조회실패")
+            continue
+        new_val = calc_ticks(name, hl["high"], hl["low"])
+        old_val = item["old_val"]
+        if new_val == "" or str(new_val) == str(old_val):
+            print(f"   ✅ [{name}] 재검증 결과 동일 - {item['date_str']} {item['time_str']} ({old_val}틱)")
+            mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-일치")
+            continue
+        print(f"   🔧 [{name}] 재검증 결과 값 변경 - {item['date_str']} {item['time_str']}: {old_val} → {new_val}틱")
+        updated = update_amplitude_cell(ws, item["date_str"], item["time_str"], name, new_val)
+        if updated:
+            alert_streak_recheck_correction(name, item["date_str"], item["time_str"], old_val, new_val)
+            mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-보정")
+        else:
+            print(f"   ⚠️ [{name}] 진폭 시트에서 해당 행을 못 찾아 보정 실패 - {item['date_str']} {item['time_str']}")
+            mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-행못찾음")
+
+
 def main():
     now = datetime.now(KST)
     print(f"🔍 폴링 체크 - {now.strftime('%Y-%m-%d %H:%M:%S')} KST")
@@ -717,6 +761,7 @@ def main():
     ws = spreadsheet.worksheet(SHEET_NAME)
     check_rollover_alerts(ws, now)
     process_checkpoints(ws, now)
+    process_streak_rechecks(ws)
     process_economic(ws, now)
     process_daily_digest(ws, now)
     process_holiday_calendar_reminder(spreadsheet, now)

@@ -131,12 +131,28 @@ def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
 
 def alert_duplicate_streak(name, value, streak):
     """같은 값이 3번 이상 연속으로 기록됐을 때 (월물 만기 임박/데이터 정체 의심)
-    (2번은 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 - 2026-08-26 기준 변경)"""
+    (2번은 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 - 2026-08-26 기준 변경)
+    2026-09-02 추가: 이 알림이 뜬 체크포인트는 10분 뒤 자동으로 한 번 더 재검증되고,
+    값이 다르게 나오면 alert_streak_recheck_correction()이 별도로 보정 안내를 보냄."""
     send_alert(
         f"`{name}` 값이 {streak}번 연속 동일한 값으로 기록되고 있어요. \n"
         f"월물 만기 혹은 데이터 소스에 문제가 있을 수 있어요. 확인 해주세요!\n"
-        f"➡️ 동일한 진폭 : {value}",
+        f"➡️ 동일한 진폭 : {value}\n"
+        f"⏳ 10분 뒤 자동으로 한 번 더 재검증할게요 (다르면 별도로 알려드려요)",
         title="🚨진폭 값 반복 감지🚨",
+    )
+
+
+def alert_streak_recheck_correction(name, date_str, time_str, old_val, new_val):
+    """2026-09-02 신규: 반복감지 알림이 뜬 체크포인트를 10분 뒤 재검증했더니 값이 달라져서
+    진폭 시트를 보정했을 때 보내는 알림 (재인님 요청 - 엔화 22:25 케이스처럼 Yahoo Finance
+    데이터가 늦게 확정되면서 처음엔 낮게 기록됐던 값을 뒤늦게 바로잡는 경우)."""
+    send_alert(
+        f"`{name}` {date_str} {time_str} 체크포인트, 반복감지 후 10분 뒤 재검증해보니\n"
+        f"값이 달라서 스프레드시트를 보정했어요.\n"
+        f"➡️ 기존 {old_val}틱 → 보정 {new_val}틱\n"
+        f"(Yahoo Finance 데이터가 뒤늦게 확정되면서 처음엔 낮게 잡혔던 것으로 보여요)",
+        title="🔧진폭 값 보정 완료🔧",
     )
 
 
@@ -307,22 +323,28 @@ def alert_unexpected_no_trading(date_str: str, timing: str):
 
 def alert_early_close_today(date_str: str, name: str, detail: str):
     """조기종료일 당일, 하루 첫 체크포인트 시점에 1회 - #trading-notify 로 참고용 안내만 발송.
-    완전휴장일과 달리 진폭 기록/체크포인트는 평소처럼 정상 진행됨 (기록 로직 변경 없음) - 2026-09-01 신규."""
+    완전휴장일과 달리 진폭 기록/체크포인트는 평소처럼 정상 진행됨 (기록 로직 변경 없음) - 2026-09-01 신규.
+    2026-09-01 재인님 요청: '조기종료 안내'(당일)는 볼드 유지 - title 파라미터 그대로 사용
+    (send_slack_alert가 title을 자동으로 *볼드* 처리함). 이모지는 ⏰(다른 알림에서 이미 사용 중)와
+    구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지)."""
     send_alert(
         f"오늘({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
         f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
-        title="⏰ [조기종료 안내]",
+        title="‼️ [조기종료 안내]‼️",
         webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
 def alert_early_close_tomorrow(date_str: str, name: str, detail: str):
     """조기종료일 전날, 미장후(+하루 마감 요약) 알림 이후 - #trading-notify 로 예고.
-    2026-09-01 신규."""
+    2026-09-01 신규. 2026-09-01 재인님 요청: '조기종료 예고'(전날)는 볼드 없이 -
+    title 파라미터를 쓰면 send_slack_alert가 자동으로 *볼드* 처리하므로,
+    title을 안 쓰고 첫 줄에 직접 넣어서 일반 텍스트로 보냄. 이모지는 ⏰(다른 알림에서 이미
+    사용 중)와 구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지)."""
     send_alert(
+        f"‼️ [조기종료 예고]‼️\n"
         f"내일({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
         f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
-        title="⏰ [조기종료 예고]",
         webhook_env_var=WEBHOOK_ENV_VAR,
     )
 

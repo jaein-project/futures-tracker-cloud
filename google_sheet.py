@@ -33,6 +33,13 @@ DAILY_SUMMARY_SHEET = "진폭_일일요약"  # 2026-09-01 추가: 미장마감 �
                                   # 영구 기록. Slack 알림은 3개월 지나면 삭제되므로, 같은 내용을 시트에도
                                   # 구조화된 형태(날짜별 시가/종가/변동)로 보관해서 나중에도 조회/분석 가능하게 함.
                                   # (탭 이름은 재인님이 시트가 늘어나도 헷갈리지 않도록 "진폭_일일요약"으로 지정)
+STREAK_RECHECK_SHEET = "반복감지_재검증"  # 2026-09-02 추가: 진폭 반복감지(3회 연속 동일값) 알림이 뜨면,
+                                     # 재인님 요청대로 그 자리에서 바로 재조회하지 않고 약 10분 뒤(Yahoo
+                                     # Finance가 방금 지나간 5분봉을 확정할 시간을 준 뒤)에 같은 구간을
+                                     # 한 번 더 계산해서 값이 다르면 진폭 시트를 보정하고 별도 알림을 보냄.
+                                     # 이 탭은 그 "재검증 대기열"을 GitHub Actions 실행 간에도 유지하기 위한
+                                     # 저장소 (매 실행이 별도 프로세스라 메모리에는 못 들고 있음).
+STREAK_RECHECK_DELAY_MINUTES = 10
 
 TICK_SIZE = {
     "나스닥":   1,
@@ -158,6 +165,95 @@ def append_daily_summary(spreadsheet, date_str, first_row, last_row):
         ws.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"   ⚠️ 진폭_일일요약 시트 기록 오류: {e}")
+
+
+def _get_or_create_streak_recheck_ws(spreadsheet):
+    """'반복감지_재검증' 탭이 없으면 새로 만들어서 반환 (2026-09-02 신설)."""
+    try:
+        return spreadsheet.worksheet(STREAK_RECHECK_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=STREAK_RECHECK_SHEET, rows=2000, cols=9)
+        header = ["등록시각", "재검증예정시각", "날짜", "체크시간", "종목", "원래값",
+                  "day_start", "target_dt", "상태"]
+        ws.append_row(header, value_input_option="USER_ENTERED")
+        return ws
+
+
+def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_start, target_dt):
+    """진폭 반복감지(3회 연속 동일값) 알림이 뜬 체크포인트를 STREAK_RECHECK_DELAY_MINUTES
+    (기본 10분) 뒤 재검증 대상으로 등록. 그 자리에서 바로 재조회하면 Yahoo Finance가
+    방금 지나간 5분봉을 아직 확정 못 했을 가능성이 커서(2026-09-02 엔화 22:25 사례로 확인됨)
+    일부러 시간차를 둠 - 재인님 요청."""
+    try:
+        ws = _get_or_create_streak_recheck_ws(spreadsheet)
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        recheck_at = now + timedelta(minutes=STREAK_RECHECK_DELAY_MINUTES)
+        ws.append_row([
+            now.isoformat(), recheck_at.isoformat(), date_str, time_str, name, str(old_val),
+            day_start.isoformat(), target_dt.isoformat(), "대기",
+        ], value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"   ⚠️ 반복감지_재검증 등록 오류: {e}")
+
+
+def get_due_streak_rechecks(spreadsheet):
+    """'상태'가 '대기'이고 재검증예정시각이 이미 지난 항목들을 반환.
+    day_start/target_dt 파싱에 실패하면(수동 편집 등) 안전하게 건너뜀."""
+    result = []
+    try:
+        ws = _get_or_create_streak_recheck_ws(spreadsheet)
+        all_values = ws.get_all_values()
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        for i, row in enumerate(all_values[1:], start=2):  # 헤더 1줄, 실제 시트 행번호는 2부터
+            if len(row) < 9 or row[8].strip() != "대기":
+                continue
+            try:
+                recheck_at = datetime.fromisoformat(row[1].strip())
+            except Exception:
+                continue
+            if recheck_at > now:
+                continue
+            try:
+                day_start = datetime.fromisoformat(row[6].strip())
+                target_dt = datetime.fromisoformat(row[7].strip())
+            except Exception:
+                continue
+            result.append({
+                "row_idx": i,
+                "date_str": row[2],
+                "time_str": row[3],
+                "name": row[4],
+                "old_val": row[5],
+                "day_start": day_start,
+                "target_dt": target_dt,
+            })
+    except Exception as e:
+        print(f"   ⚠️ 반복감지_재검증 조회 오류: {e}")
+    return result
+
+
+def mark_streak_recheck_done(spreadsheet, row_idx, status):
+    """재검증 처리 완료 표시 ('완료-일치' / '완료-보정' / '완료-조회실패')"""
+    try:
+        ws = _get_or_create_streak_recheck_ws(spreadsheet)
+        ws.update_cell(row_idx, 9, status)
+    except Exception as e:
+        print(f"   ⚠️ 반복감지_재검증 상태 갱신 오류: {e}")
+
+
+def update_amplitude_cell(ws, date_str, time_str, name, new_val):
+    """진폭 시트에서 date_str+time_str에 해당하는 행을 찾아, name 종목의 틱 값을
+    new_val로 덮어씀 (반복감지 재검증 결과 보정용). 성공하면 True, 못 찾으면 False."""
+    try:
+        col_idx = 4 + SYMBOL_ORDER.index(name)  # A열 빈칸, B=날짜, C=체크시간, D부터 종목 시작
+        all_values = ws.get_all_values()
+        for i, row in enumerate(all_values[2:], start=3):  # 헤더 2줄, 실제 시트 행번호는 3부터
+            if len(row) > 2 and row[1].strip() == date_str and row[2].strip() == time_str:
+                ws.update_cell(i, col_idx, new_val)
+                return True
+    except Exception as e:
+        print(f"   ⚠️ 진폭 시트 보정 오류: {e}")
+    return False
 
 
 def _record_data_inner(data: dict, timing: str, note: str = ""):
