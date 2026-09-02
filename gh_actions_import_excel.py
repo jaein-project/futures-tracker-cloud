@@ -230,11 +230,25 @@ def main():
         print("   ℹ️ 추가할 신규 데이터 없음 (모두 중복)")
         return
 
+    # 2026-09-02 수정 (버그 픽스 - 재인님 리포트): 기존엔 ws.append_rows()로 "알아서 맨 끝에
+    # 추가해라"라고 맡겼는데, 이 시트는 A열이 전부 빈칸이라 구글 시트 API가 "기존 표가 어디서
+    # 끝나는지"를 잘못 판단해서 헤더(3행) 바로 다음(4행)에 새 데이터를 덮어써버리는 사고가 있었음
+    # (8월 재업로드 때 원래 있던 1월 데이터 20줄이 새 8월 데이터로 덮어써짐 - 데이터 유실).
+    # 이제는 "몇 번째 행부터 쓸지"를 직접 계산해서 정확히 그 위치에만 쓰도록 수정함 - 자동 감지에
+    # 의존하지 않으므로, 재인님이 가끔 하시는 "시트 싹 지우고 재업로드"에도 안전하게 동작함
+    # (지웠으면 existing이 짧아지고, 그만큼 next_row도 자동으로 앞당겨짐).
+    # A열은 빈칸이라 실제 데이터는 B열(날짜)부터 시작 - 그래서 목적지 범위도 B열부터 지정.
+    next_row = len(existing) + 1
+    print(f"   📍 다음 빈 행 계산: 현재 마지막 데이터 행={len(existing)} → {next_row}행부터 씀")
+
     batch_size = 20
     added = 0
     for i in range(0, len(new_rows), batch_size):
         batch = new_rows[i:i + batch_size]
-        ws.append_rows(batch, value_input_option="USER_ENTERED")
+        end_row = next_row + len(batch) - 1
+        ws.update(f"B{next_row}:G{end_row}", batch, value_input_option="USER_ENTERED")
+        print(f"   ✏️ {next_row}행 ~ {end_row}행에 {len(batch)}건 기록")
+        next_row = end_row + 1
         added += len(batch)
         if i + batch_size < len(new_rows):
             time.sleep(2)
