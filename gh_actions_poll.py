@@ -464,7 +464,7 @@ def process_checkpoints(ws, now: datetime):
                         from alerts import alert_daily_summary
                         alert_daily_summary(date_str, comparison)
                         # 2026-09-01 추가: Slack 알림은 3개월 지나면 사라지므로, 같은 비교 내용을
-                        # '진폭_일일요약' 탭에도 영구 기록 (날짜별 시가/종가/변동을 구조화된 숫자로 보관)
+                        # '진폭_Summary' 탭에도 영구 기록 (날짜별 시가/종가/변동을 구조화된 숫자로 보관)
                         from google_sheet import append_daily_summary
                         append_daily_summary(ws.spreadsheet, date_str, first_row, row)
 
@@ -661,7 +661,7 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
     comparison = format_ticks_comparison(before_row, after_row)
     name_str = ", ".join(g.get("names") or []) or "발표"
     # 2026-09-05 추가: Slack은 순수 알림이라 3개월 후 사라지므로, 같은 전/후 비교 내용을
-    # '경제발표_전후진폭비교' 탭에도 영구 기록 (재인님 요청 - 나중에 데이터 분석에 쓰기 위함)
+    # '경제발표_AGG' 탭에도 영구 기록 (재인님 요청 - 나중에 데이터 분석에 쓰기 위함)
     from google_sheet import append_economic_comparison
     append_economic_comparison(spreadsheet, date_str, g["time"], name_str, before_row, after_row)
     alert_pre_post_comparison(date_str, g["time"], name_str, comparison)
