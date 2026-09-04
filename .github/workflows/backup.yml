@@ -33,6 +33,10 @@ jobs:
         run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
 
       - name: "백업 실행 (드라이브 복사 + xlsx 스냅샷 생성)"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python backup_sheet.py
 
       - name: "스냅샷 커밋 & 푸시"
