@@ -41,6 +41,9 @@ STREAK_RECHECK_SHEET = "반복감지_재검증"  # 2026-09-02 추가: 진폭 반
                                      # 저장소 (매 실행이 별도 프로세스라 메모리에는 못 들고 있음).
                                      # 2026-09-04 추가: 메시지ts/채널ID 2개 컬럼 추가 - 재검증 결과를
                                      # 원본 알림 메시지에 이모지+스레드로 달아주기 위함 (봇 더블체크 기능).
+                                     # 2026-09-04 추가(2차): 체크포인트ts/체크포인트채널ID 2개 컬럼 추가 -
+                                     # 값이 상이해서 보정이 필요한 경우, 보정 내용을 #futures-tracker의
+                                     # 해당 체크포인트 기록 메시지 스레드에 달아주기 위함 (재인님 요청).
 STREAK_RECHECK_DELAY_MINUTES = 10
 
 ROLLOVER_CHECK_SHEET = "롤오버_체크"  # 2026-09-04 추가: 월물 롤오버 알림이 뜨면
@@ -182,30 +185,41 @@ def append_daily_summary(spreadsheet, date_str, first_row, last_row):
 def _get_or_create_streak_recheck_ws(spreadsheet):
     """'반복감지_재검증' 탭이 없으면 새로 만들어서 반환 (2026-09-02 신설).
     2026-09-04: 이미 있는 탭이면 헤더에 메시지ts/채널ID 컬럼이 없을 경우 자동으로 추가함
-    (기존에 만들어진 실제 시트는 9개 컬럼이라, 코드만 바꿔서는 새 컬럼이 안 생기기 때문)."""
+    (기존에 만들어진 실제 시트는 9개 컬럼이라, 코드만 바꿔서는 새 컬럼이 안 생기기 때문).
+    2026-09-04 추가(2차): 체크포인트ts/체크포인트채널ID 2개 컬럼 추가 - 반복감지 재검증 결과
+    보정이 발생했을 때, 원본 반복감지 메시지(#trading-notify)가 아니라 #futures-tracker의
+    해당 체크포인트 기록 메시지 쪽에 보정 내용을 스레드로 달아주기 위해 그 메시지 위치도 저장함."""
     try:
         ws = spreadsheet.worksheet(STREAK_RECHECK_SHEET)
     except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=STREAK_RECHECK_SHEET, rows=2000, cols=11)
+        ws = spreadsheet.add_worksheet(title=STREAK_RECHECK_SHEET, rows=2000, cols=13)
         header = ["등록시각", "재검증예정시각", "날짜", "체크시간", "종목", "원래값",
-                  "day_start", "target_dt", "상태", "메시지ts", "채널ID"]
+                  "day_start", "target_dt", "상태", "메시지ts", "채널ID",
+                  "체크포인트ts", "체크포인트채널ID"]
         ws.append_row(header, value_input_option="USER_ENTERED")
         return ws
     header = ws.row_values(1)
     if len(header) < 11:
         ws.update_cell(1, 10, "메시지ts")
         ws.update_cell(1, 11, "채널ID")
+    if len(header) < 13:
+        ws.update_cell(1, 12, "체크포인트ts")
+        ws.update_cell(1, 13, "체크포인트채널ID")
     return ws
 
 
 def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_start, target_dt,
-                             message_ts=None, channel=None):
+                             message_ts=None, channel=None, checkpoint_ts=None, checkpoint_channel=None):
     """진폭 반복감지(3회 연속 동일값) 알림이 뜬 체크포인트를 STREAK_RECHECK_DELAY_MINUTES
     (기본 10분) 뒤 재검증 대상으로 등록. 그 자리에서 바로 재조회하면 Yahoo Finance가
     방금 지나간 5분봉을 아직 확정 못 했을 가능성이 커서(2026-09-02 엔화 22:25 사례로 확인됨)
     일부러 시간차를 둠 - 재인님 요청.
-    message_ts/channel: 2026-09-04 추가 - 원본 알림 메시지 위치(봇 더블체크용). 없어도(웹훅으로
-    대체 발송된 경우 등) 정상 동작하며, 그 경우 재검증 결과에 이모지/스레드만 안 달림."""
+    message_ts/channel: 2026-09-04 추가 - 원본 알림 메시지(#trading-notify) 위치(봇 더블체크용).
+    checkpoint_ts/checkpoint_channel: 2026-09-04 추가(2차) - 같은 체크포인트에서 함께 발송된
+    #futures-tracker 진폭 기록 메시지 위치. 값이 상이해서 보정이 필요한 경우, 보정 내용은
+    원본 반복감지 메시지가 아니라 이 체크포인트 메시지 쪽에 스레드로 달림 (재인님 요청).
+    전부 없어도(웹훅으로 대체 발송된 경우 등) 정상 동작하며, 그 경우 해당 부분 이모지/스레드만
+    안 달림."""
     try:
         ws = _get_or_create_streak_recheck_ws(spreadsheet)
         now = datetime.now(pytz.timezone(TIMEZONE))
@@ -214,6 +228,7 @@ def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_
             now.isoformat(), recheck_at.isoformat(), date_str, time_str, name, str(old_val),
             day_start.isoformat(), target_dt.isoformat(), "대기",
             message_ts or "", channel or "",
+            checkpoint_ts or "", checkpoint_channel or "",
         ], value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 등록 오류: {e}")
@@ -222,8 +237,8 @@ def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_
 def get_due_streak_rechecks(spreadsheet):
     """'상태'가 '대기'이고 재검증예정시각이 이미 지난 항목들을 반환.
     day_start/target_dt 파싱에 실패하면(수동 편집 등) 안전하게 건너뜀.
-    message_ts/channel은 2026-09-04 이전에 등록된 옛날 행에는 없을 수 있어서 없으면 None 반환
-    (호출부에서 없으면 이모지/스레드 없이 조용히 건너뜀)."""
+    message_ts/channel, checkpoint_ts/checkpoint_channel은 각 컬럼이 추가되기 이전에 등록된
+    옛날 행에는 없을 수 있어서 없으면 None 반환 (호출부에서 없으면 이모지/스레드 없이 조용히 건너뜀)."""
     result = []
     try:
         ws = _get_or_create_streak_recheck_ws(spreadsheet)
@@ -253,6 +268,8 @@ def get_due_streak_rechecks(spreadsheet):
                 "target_dt": target_dt,
                 "message_ts": row[9].strip() if len(row) > 9 and row[9].strip() else None,
                 "channel": row[10].strip() if len(row) > 10 and row[10].strip() else None,
+                "checkpoint_ts": row[11].strip() if len(row) > 11 and row[11].strip() else None,
+                "checkpoint_channel": row[12].strip() if len(row) > 12 and row[12].strip() else None,
             })
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 조회 오류: {e}")

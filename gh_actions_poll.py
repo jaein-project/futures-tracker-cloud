@@ -272,7 +272,8 @@ def checkpoint_already_recorded_cached(all_values, date_str: str, target_dt: dat
             return True
     return False
 
-def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_dt, threshold=3):
+def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_dt, threshold=3,
+                            checkpoint_ts=None, checkpoint_channel=None):
     """같은 값이 threshold번 이상 연속으로 기록되면 Slack 알림
     (경제발표/백필처럼 비고가 있는 행은 스트릭 계산에서 제외)
     2번 정도는 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 (2026-08-26 기준 변경)
@@ -285,6 +286,11 @@ def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_d
     2026-09-02 추가: 알림을 보낸 체크포인트는 STREAK_RECHECK_DELAY_MINUTES(10분) 뒤
     process_streak_rechecks()가 자동으로 한 번 더 재검증하도록 '반복감지_재검증' 탭에 등록함
     (재인님 요청 - Yahoo Finance 데이터가 늦게 확정돼서 처음엔 낮게 기록되는 경우 대비).
+
+    checkpoint_ts/checkpoint_channel: 2026-09-04 추가 - 같은 체크포인트에서 함께 발송된
+    #futures-tracker 진폭 기록 메시지 위치 (process_checkpoints에서 alert_checkpoint_recorded
+    결과로 전달받음). 재검증 결과 값이 상이해서 보정이 필요할 때, 그 내용을 이 체크포인트
+    메시지 쪽에 스레드로 달아주기 위해 register_streak_recheck에 그대로 전달함 (재인님 요청).
     """
     from alerts import alert_duplicate_streak
     from google_sheet import register_streak_recheck
@@ -314,6 +320,7 @@ def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_d
             register_streak_recheck(
                 spreadsheet, date_str, time_str, name, new_val, day_start, target_dt,
                 message_ts=result.get("ts"), channel=result.get("channel"),
+                checkpoint_ts=checkpoint_ts, checkpoint_channel=checkpoint_channel,
             )
 
 def process_checkpoints(ws, now: datetime):
@@ -378,10 +385,14 @@ def process_checkpoints(ws, now: datetime):
                 continue
 
             if any_data:
-                check_duplicate_streak(all_values, row, ws.spreadsheet, day_start, target_dt)
-                ws.append_row(row, value_input_option="USER_ENTERED")
-                print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
-                from alerts import alert_checkpoint_recorded
+                # 2026-09-04 재수정: alert_checkpoint_recorded()를 check_duplicate_streak()보다
+                # 먼저 호출하도록 순서를 바꿈 - 반복감지 재검증 결과 보정이 발생했을 때, 그 내용을
+                # 이 체크포인트 알림 메시지(#futures-tracker)에 스레드로 달아줘야 해서(재인님 요청),
+                # 먼저 이 알림을 보내서 메시지 ts/channel을 확보한 뒤 check_duplicate_streak에
+                # 넘겨줘야 함. (prev_row/detail 계산은 all_values/시트 기록 순서와 무관해서
+                # 그대로 앞으로 옮겨도 결과는 동일함 - ws.append_row/all_values.append는 원래도
+                # 이 계산과 독립적인 별개 부수효과였음)
+                #
                 # 2026-08-27 발견: 직전 행을 무조건 all_values[-1]로 잡으면, 그 사이에 경제발표
                 # 행(process_economic이 기록)이 끼어 있을 때 문제가 생김 - 경제발표는 날짜를
                 # (트레이딩일 기준이 아니라) 달력 날짜 그대로 쓰기 때문에, 자정 넘어 발표된 경제지표가
@@ -413,7 +424,16 @@ def process_checkpoints(ws, now: datetime):
                             break
                 detail = format_ticks_detail(row, prev_row)
                 time_hhmm = target_dt.strftime("%H:%M")
-                alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
+                from alerts import alert_checkpoint_recorded
+                checkpoint_result = alert_checkpoint_recorded(date_str, time_hhmm, timing, detail)
+
+                check_duplicate_streak(
+                    all_values, row, ws.spreadsheet, day_start, target_dt,
+                    checkpoint_ts=checkpoint_result.get("ts"),
+                    checkpoint_channel=checkpoint_result.get("channel"),
+                )
+                ws.append_row(row, value_input_option="USER_ENTERED")
+                print(f"✅ [{timing}] 기록 완료: {date_str} {time_str}")
                 # 방금 추가한 행도 반영해서 이후 루프에서 다시 중복 감지/비교되도록 갱신
                 # (주의: all_values의 다른 행들은 전부 A열이 빈칸이라 인덱스가 1칸 밀린 시트 원본 형식이라
                 #  build_row()가 만든 로컬 row([date_str, time_str, tick*7, note], 밀림 없음)를 그냥 append하면
@@ -750,9 +770,12 @@ def process_streak_rechecks(ws):
     2026-09-02 신규 (재인님 요청) - Yahoo Finance 5분봉이 방금 지나간 구간을 아직 확정 못 해서
     처음엔 낮게 기록됐다가, 시간이 좀 지나면 실제 값이 올라오는 경우(엔화 22:25 사례)를 잡기 위함.
     값이 그대로면 조용히 '완료-일치'로 표시하고 넘어가고, 값이 다르면 진폭 시트를 보정한 뒤
-    해당 종목만 따로 Slack 알림(alert_streak_recheck_correction)을 보냄."""
+    #trading-notify 원본 반복감지 메시지에는 🤖 반응만 남기고, #futures-tracker의 해당
+    체크포인트 기록 메시지 쪽에 🤖 반응 + 보정 내용 전체를 스레드로 달아줌 (2026-09-04 수정 -
+    재인님 요청: 별도로 새 알림이 또 올라오면 "정신 사납다"는 피드백을 받아, 새 알림 없이
+    이 스레드 답변 하나로 완전히 대체함)."""
     from google_sheet import get_due_streak_rechecks, mark_streak_recheck_done, update_amplitude_cell
-    from alerts import alert_streak_recheck_correction, reply_streak_match, reply_streak_correction
+    from alerts import reply_streak_match, reply_streak_correction_ack, reply_checkpoint_correction
     spreadsheet = ws.spreadsheet
     due = get_due_streak_rechecks(spreadsheet)
     for item in due:
@@ -778,8 +801,12 @@ def process_streak_rechecks(ws):
         updated = update_amplitude_cell(ws, item["date_str"], item["time_str"], name, new_val)
         if updated:
             if item["message_ts"] and item["channel"]:
-                reply_streak_correction(item["channel"], item["message_ts"])
-            alert_streak_recheck_correction(name, item["date_str"], item["time_str"], old_val, new_val)
+                reply_streak_correction_ack(item["channel"], item["message_ts"])
+            if item["checkpoint_ts"] and item["checkpoint_channel"]:
+                reply_checkpoint_correction(
+                    item["checkpoint_channel"], item["checkpoint_ts"],
+                    name, item["date_str"], item["time_str"], old_val, new_val,
+                )
             mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-보정")
         else:
             print(f"   ⚠️ [{name}] 진폭 시트에서 해당 행을 못 찾아 보정 실패 - {item['date_str']} {item['time_str']}")

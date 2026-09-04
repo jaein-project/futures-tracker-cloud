@@ -58,6 +58,8 @@ NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
 
 BOT_TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
 TRADING_NOTIFY_CHANNEL_ID = "C0BS0HENLJ1"  # #trading-notify 채널 ID - 반복감지/롤오버/워크플로우 오류 더블체크 전용
+FUTURES_TRACKER_CHANNEL_ID = "C0BTBE5EJM6"  # #futures-tracker 채널 ID - 2026-09-04 추가:
+                                             # 반복감지 재검증 보정 결과를 체크포인트 메시지 스레드에 달기 위해 필요
 JAEIN_SLACK_USER_ID = "U0BRP2C3PMM"  # 재인님 개인 Slack 계정 - 롤오버 데이터 이상 시 태그용
 
 
@@ -147,19 +149,22 @@ def _slack_api_post(method: str, payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def post_bot_alert(message: str, title: str = None, channel: str = TRADING_NOTIFY_CHANNEL_ID) -> dict:
+def post_bot_alert(message: str, title: str = None, channel: str = TRADING_NOTIFY_CHANNEL_ID,
+                    fallback_webhook_env_var: str = WEBHOOK_ENV_VAR) -> dict:
     """봇 토큰(Web API)으로 메시지를 보내서 메시지 ts를 확보함 (나중에 이모지/스레드 답변을
-    달 때 필요 - 반복감지/롤오버/워크플로우 오류 3개 알림 전용, 2026-09-04 신규).
+    달 때 필요 - 반복감지/롤오버/워크플로우 오류/체크포인트 기록 알림 전용, 2026-09-04 신규).
     반환값: {"ts": ..., "channel": ...} - 봇 토큰이 없거나 실패하면 기존 웹훅 방식(send_alert)으로
     자동 대체 발송하고 {"ts": None, "channel": None}을 반환함 (알림 자체는 정상 발송됨,
-    다만 이번 알림에 한해 이후 이모지/스레드 더블체크는 동작 안 함)."""
+    다만 이번 알림에 한해 이후 이모지/스레드 더블체크는 동작 안 함).
+    fallback_webhook_env_var: 봇 전송 실패 시 대체할 웹훅 채널 - 채널마다 다르므로(기본은
+    #trading-notify) alert_checkpoint_recorded 등 다른 채널용 호출부에서 지정 (2026-09-04 추가)."""
     text = f"*{title}*\n{message}" if title else message
     result = _slack_api_post("chat.postMessage", {"channel": channel, "text": text})
     if result.get("ok"):
         send_ntfy_alert(message, title)
         return {"ts": result.get("ts"), "channel": result.get("channel", channel)}
     print("   ℹ️ 봇 토큰 전송 실패/미설정 - 웹훅 방식으로 대체 발송")
-    send_alert(message, title=title)
+    send_alert(message, title=title, webhook_env_var=fallback_webhook_env_var)
     return {"ts": None, "channel": None}
 
 
@@ -213,9 +218,11 @@ def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
 def alert_duplicate_streak(name, value, streak):
     """같은 값이 3번 이상 연속으로 기록됐을 때 (월물 만기 임박/데이터 정체 의심)
     (2번은 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 - 2026-08-26 기준 변경)
-    2026-09-02 추가: 이 알림이 뜬 체크포인트는 10분 뒤 자동으로 한 번 더 재검증되고,
-    값이 다르게 나오면 alert_streak_recheck_correction()이 별도로 보정 안내를 보냄.
+    2026-09-02 추가: 이 알림이 뜬 체크포인트는 10분 뒤 자동으로 한 번 더 재검증됨.
     2026-09-02 멘트 확정 (재인님 승인): "⏳ 10분 후 재검증 예정 (오류 확인 시 별도 알림)" 문구로 최종 확정.
+    (문구상 "별도 알림"이라 되어 있지만 2026-09-04부터는 값이 다르면 별도 알림 대신
+    #futures-tracker 체크포인트 메시지 스레드에 보정 내용이 달림 - 문구 자체는 재인님이
+    이미 승인한 표현이라 그대로 유지, 실제 동작만 변경됨.)
     2026-09-04 수정: 재검증 결과(일치/보정)를 이 메시지에 이모지+스레드로 달아주는 기능을 위해
     봇 토큰(Web API)으로 전송하고 ts/channel을 반환하도록 변경 (register_streak_recheck에 전달됨)."""
     return post_bot_alert(
@@ -227,27 +234,16 @@ def alert_duplicate_streak(name, value, streak):
     )
 
 
-def alert_streak_recheck_correction(name, date_str, time_str, old_val, new_val):
-    """2026-09-02 신규: 반복감지 알림이 뜬 체크포인트를 10분 뒤 재검증했더니 값이 달라져서
-    진폭 시트를 보정했을 때 보내는 알림 (재인님 요청 - 엔화 22:25 케이스처럼 Yahoo Finance
-    데이터가 늦게 확정되면서 처음엔 낮게 기록됐던 값을 뒤늦게 바로잡는 경우).
-    2026-09-02 멘트 확정 (재인님 승인): "재검증 결과 값이 달라서 스프레드시트를 수정했어요." 문구로 최종 확정."""
-    send_alert(
-        f"`{name}` {date_str} {time_str} 재검증 완료!\n"
-        f"재검증 결과 값이 달라서 스프레드시트를 수정했어요.\n"
-        f"➡️ 기존 {old_val} → 재검증 {new_val}",
-        title="🔧진폭 값 보정 완료🔧",
-    )
-
-
 # ─────────────────────────────────────────────────────────────
 # 2026-09-04 추가: 반복감지/롤오버/워크플로우 오류 - 봇 더블체크(이모지+스레드 답변) 문구
 # 재인님이 수동으로 하던 "이모지 체크 + 스레드 답글"을 봇이 대신 해주는 기능 (재인님 확정 문구).
-# 이모지는 전부 👀(eyes)로 통일 - "재인님이 직접 다 확인했다"는 뜻의 ✅ 체크는 재인님이 직접
-# 추가하는 것과 구분하기 위해 봇은 항상 👀만 사용함 (재인님 요청: "체크는 내가 할게!").
+# 이모지는 전부 🤖(robot_face)로 통일 - 재인님 확정 사유: "어차피 github에서 해주는 거니까
+# AI가 더 맞는 거 같네요" (2026-09-04, 기존 👀에서 변경). "재인님이 직접 다 확인했다"는 뜻의
+# ✅ 체크는 재인님이 직접 추가하는 것과 구분하기 위해 봇은 항상 🤖만 사용함
+# (재인님 요청: "체크는 내가 할게!" - 롤오버는 예외로 봇이 이모지를 안 달고 재인님이 직접 확인).
 # ─────────────────────────────────────────────────────────────
 
-RECHECK_EMOJI = "eyes"  # 👀
+RECHECK_EMOJI = "robot_face"  # 🤖 (2026-09-04: 👀에서 변경 - 재인님 확정)
 
 # 반복감지 재검증 - 값이 그대로였을 때(문제 없음) 스레드 답변. 매번 같은 문구면 기계적으로
 # 보여서 두 문구를 번갈아 가면서 사용함 (재인님 요청 - 등록 순번의 홀/짝으로 alternate)
@@ -255,8 +251,6 @@ STREAK_MATCH_REPLIES = [
     "✅ 재검증 완료 - 값 그대로예요, 이상 없어요!",
     "10분 후 재검증 결과 동일 - 문제 없는 걸로 확인했어요!",
 ]
-
-STREAK_CORRECTION_REPLY = "재검증 결과 값이 달라서 보정했어요 - 아래 알림 참고해주세요 👇"
 
 ROLLOVER_NORMAL_REPLY = "10분 후 확인 결과, 새 월물 데이터 정상적으로 들어오고 있어요!"
 
@@ -273,16 +267,37 @@ def _rollover_abnormal_reply() -> str:
 
 
 def reply_streak_match(channel: str, ts: str, variant_idx: int):
-    """반복감지 재검증 결과 값이 동일(문제 없음)했을 때 - 👀 반응 + 스레드 답변(번갈아가며)"""
+    """반복감지 재검증 결과 값이 동일(문제 없음)했을 때 - 🤖 반응 + 스레드 답변(번갈아가며)"""
     add_reaction(channel, ts, RECHECK_EMOJI)
     reply_in_thread(channel, ts, STREAK_MATCH_REPLIES[variant_idx % len(STREAK_MATCH_REPLIES)])
 
 
-def reply_streak_correction(channel: str, ts: str):
-    """반복감지 재검증 결과 값이 달라서 보정했을 때 - 👀 반응 + 스레드 답변
-    (기존 alert_streak_recheck_correction 별도 재알람은 그대로 추가 발송됨)"""
+def reply_streak_correction_ack(channel: str, ts: str):
+    """반복감지 재검증 결과 값이 달라서 보정됐을 때 - #trading-notify 원본 반복감지 메시지에는
+    🤖 반응만 추가함 (스레드 답글 없음 - 보정 상세 내용은 #futures-tracker의 해당 체크포인트
+    메시지 쪽에 reply_checkpoint_correction()으로 달림). 2026-09-04 수정 (재인님 요청) -
+    기존에는 여기에도 스레드 답변이 붙고 별도로 "🔧진폭 값 보정 완료🔧" 알림이 새 글로도
+    올라갔는데, 재인님이 "정신 사납다"고 판단해서 이 메시지는 이모지만 남기고
+    상세 내용은 #futures-tracker 쪽으로 완전히 옮김."""
     add_reaction(channel, ts, RECHECK_EMOJI)
-    reply_in_thread(channel, ts, STREAK_CORRECTION_REPLY)
+
+
+def reply_checkpoint_correction(channel: str, ts: str, name: str, date_str: str, time_str: str,
+                                 old_val, new_val):
+    """반복감지 재검증 결과 값이 달라서 보정됐을 때 - #futures-tracker의 해당 체크포인트
+    ("✏️ {날짜} 진폭 업데이트 완료") 메시지에 🤖 반응 + 스레드로 보정 내용 전체를 답변.
+    2026-09-04 신규 (재인님 요청) - 기존에 별도 알림으로 새로 올라가던 "🔧진폭 값 보정 완료🔧"를
+    완전히 대체함 (더 이상 새 알림은 안 뜨고 이 스레드 답변으로만 안내됨). 메시지 문구는
+    기존 alert_streak_recheck_correction()에서 쓰던 것과 동일(재인님이 이미 승인한 문구라
+    자리만 옮기고 내용은 그대로 유지)."""
+    add_reaction(channel, ts, RECHECK_EMOJI)
+    text = (
+        f"*🔧진폭 값 보정 완료🔧*\n"
+        f"`{name}` {date_str} {time_str} 재검증 완료!\n"
+        f"재검증 결과 값이 달라서 스프레드시트를 수정했어요.\n"
+        f"➡️ 기존 {old_val} → 재검증 {new_val}"
+    )
+    reply_in_thread(channel, ts, text)
 
 
 def reply_rollover_check(channel: str, ts: str, data_ok: bool):
@@ -293,7 +308,7 @@ def reply_rollover_check(channel: str, ts: str, data_ok: bool):
 
 def reply_workflow_recovered(channel: str, ts: str, variant_idx: int):
     """다음 폴링에서 워크플로우가 예외 없이 정상 완료되어 복구 확인됐을 때 -
-    👀 반응 + 스레드 답변(번갈아가며)"""
+    🤖 반응 + 스레드 답변(번갈아가며)"""
     add_reaction(channel, ts, RECHECK_EMOJI)
     reply_in_thread(channel, ts, WORKFLOW_RECOVERED_REPLIES[variant_idx % len(WORKFLOW_RECOVERED_REPLIES)])
 
@@ -335,16 +350,21 @@ def _to_ampm_hhmm(time_hhmm: str) -> str:
 def alert_checkpoint_recorded(date_str: str, time_hhmm: str, timing: str, detail: str = None):
     """정기 체크포인트(아시아마감전 등) 진폭이 시트에 기록됐을 때 #futures-tracker로 실시간 알림.
     time_hhmm: 그 체크포인트의 실제 시각 24시간제 HH:MM (예: '15:20') - 문구에는 12시간제로 변환해서 표시
-    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)"""
+    detail: 종목별 진폭 값 + 직전 기록 대비 증감을 정리한 문자열 (gh_actions_poll.py에서 생성)
+    2026-09-04 수정: 이 체크포인트에서 반복감지 재검증 보정이 발생하면 이 메시지에 🤖 반응 +
+    스레드로 보정 내용을 달아주는 기능을 위해 봇 토큰(Web API)으로 전송하고 ts/channel을
+    반환하도록 변경 (반환값은 register_streak_recheck의 checkpoint_ts/checkpoint_channel로 전달됨).
+    봇 토큰이 없거나 실패하면 기존과 동일하게 #futures-tracker 웹훅으로 대체 발송됨."""
     display_name = CHECKPOINT_DISPLAY_NAMES.get(timing, timing)
     ampm_time = _to_ampm_hhmm(time_hhmm)
     message = f"`{display_name}({ampm_time})` 진폭 기록 완료!"
     if detail:
         message += f"\n{detail}"
-    send_alert(
+    return post_bot_alert(
         message,
         title=f"✏️ {date_str} 진폭 업데이트 완료",
-        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+        channel=FUTURES_TRACKER_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
     )
 
 
