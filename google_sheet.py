@@ -72,7 +72,11 @@ TICK_SIZE = {
 }
 
 
-def get_client():
+def get_credentials():
+    """인증된 구글 Credentials 객체를 반환 (2026-09-05 분리: 기존엔 get_client() 안에만 있던
+    로직인데, 백업 스크립트(backup_sheet.py)가 gspread가 아니라 Drive API를 직접 호출해야 해서
+    creds.token(Bearer 토큰)이 그대로 필요해짐 - 그래서 이 부분만 떼어내 재사용 가능하게 함.
+    get_client()의 동작은 이전과 완전히 동일(내부에서 이 함수를 호출하도록만 바뀜)."""
     creds = None
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "rb") as f:
@@ -86,7 +90,11 @@ def get_client():
         print("✅ 로그인 성공!")
         with open(TOKEN_FILE, "wb") as f:
             pickle.dump(creds, f)
-    return gspread.authorize(creds)
+    return creds
+
+
+def get_client():
+    return gspread.authorize(get_credentials())
 
 
 def calc_ticks(name, high, low):
