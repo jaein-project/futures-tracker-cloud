@@ -661,7 +661,7 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
     comparison = format_ticks_comparison(before_row, after_row)
     name_str = ", ".join(g.get("names") or []) or "발표"
     # 2026-09-05 추가: Slack은 순수 알림이라 3개월 후 사라지므로, 같은 전/후 비교 내용을
-    # '경제발표_전후비교' 탭에도 영구 기록 (재인님 요청 - 나중에 데이터 분석에 쓰기 위함)
+    # '경제발표_전후진폭비교' 탭에도 영구 기록 (재인님 요청 - 나중에 데이터 분석에 쓰기 위함)
     from google_sheet import append_economic_comparison
     append_economic_comparison(spreadsheet, date_str, g["time"], name_str, before_row, after_row)
     alert_pre_post_comparison(date_str, g["time"], name_str, comparison)

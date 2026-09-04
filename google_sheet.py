@@ -56,7 +56,7 @@ WORKFLOW_ERROR_SHEET = "워크플로우_오류_추적"  # 2026-09-04 추가: 워
                                           # 다음 폴링(gh_actions_poll.py)이 예외 없이 끝까지 정상
                                           # 완료되면 '복구됐다'고 보고 원본 알림에 이모지+스레드 답변.
 
-ECONOMIC_COMPARISON_SHEET = "경제발표_전후비교"  # 2026-09-05 추가: 경제발표 20분 후 전/후 진폭 비교는
+ECONOMIC_COMPARISON_SHEET = "경제발표_전후진폭비교"  # 2026-09-05 추가: 경제발표 20분 후 전/후 진폭 비교는
                                              # 원래 #economic-presentation에 순수 알림(시트 기록 없음)으로만
                                              # 나가던 것 - 재인님이 나중에 데이터 분석에 쓰고 싶다고 하셔서
                                              # 이 탭에도 영구 기록하도록 추가 (Slack은 3개월 후 삭제됨).
@@ -409,7 +409,7 @@ def mark_workflow_error_resolved(spreadsheet, row_idx, status="완료-복구"):
 
 
 def _get_or_create_economic_comparison_ws(spreadsheet):
-    """'경제발표_전후비교' 탭이 없으면 새로 만들어서 반환 (2026-09-05 신설).
+    """'경제발표_전후진폭비교' 탭이 없으면 새로 만들어서 반환 (2026-09-05 신설).
     슬랙 메시지와 동일한 가로형 구조: 날짜/발표시각/발표명 + 종목별 전/후/증감 3열씩."""
     try:
         return spreadsheet.worksheet(ECONOMIC_COMPARISON_SHEET)
@@ -426,7 +426,7 @@ def _get_or_create_economic_comparison_ws(spreadsheet):
 
 def append_economic_comparison(spreadsheet, date_str, event_time, name_str, before_row, after_row):
     """경제발표 20분 후 전/후 진폭 비교 - gh_actions_poll.py의 format_ticks_comparison()과
-    똑같은 인덱싱으로 종목별 전/후/증감을 뽑아 '경제발표_전후비교' 탭에 영구 기록
+    똑같은 인덱싱으로 종목별 전/후/증감을 뽑아 '경제발표_전후진폭비교' 탭에 영구 기록
     (2026-09-05 신규, 재인님 요청 - Slack 알림은 순수 알림이라 3개월 후 사라지므로).
     before_row: ws.get_all_values()로 읽은 '전(-5분)' 원본 시트 행 (A열 빈칸 → 인덱스 1칸 밀림)
     after_row : build_row()로 만든 '후(+20분)' 로컬 행 (밀림 없음)"""
@@ -446,7 +446,7 @@ def append_economic_comparison(spreadsheet, date_str, event_time, name_str, befo
                 row += [before_val, after_val, ""]
         ws.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
-        print(f"   ⚠️ 경제발표_전후비교 기록 오류: {e}")
+        print(f"   ⚠️ 경제발표_전후진폭비교 기록 오류: {e}")
 
 
 def update_amplitude_cell(ws, date_str, time_str, name, new_val):
