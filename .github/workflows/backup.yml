@@ -1,0 +1,45 @@
+name: "진폭 스프레드시트 자동 백업"
+
+# 2026-09-05 신설 - 재인님 요청 ("백업이 부족하다"는 피드백에 따라 이중 백업 체계 구성):
+#   1) 구글 드라이브 "진폭_백업" 폴더에 스프레드시트 전체를 통째로 복사
+#   2) 이 저장소의 backups/ 폴더에 xlsx 스냅샷을 커밋
+# 두 백업 모두 backup_sheet.py 하나가 처리하고, 여기서는 그 실행 + 커밋/푸시만 담당.
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # 매일 UTC 17:00 (한국시간 새벽 2시) - 하루 한 번, 조용한 시간대에 실행
+  workflow_dispatch:
+
+permissions:
+  contents: write   # backups/ 폴더에 새 스냅샷을 커밋하기 위해 필요
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "패키지 설치"
+        run: pip install -r requirements-cloud.txt
+
+      - name: "구글 인증 토큰 복원"
+        run: echo "${{ secrets.GOOGLE_TOKEN_B64 }}" | base64 -d > token.pickle
+
+      - name: "백업 실행 (드라이브 복사 + xlsx 스냅샷 생성)"
+        run: python backup_sheet.py
+
+      - name: "스냅샷 커밋 & 푸시"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backups/
+          if ! git diff --cached --quiet; then
+            git commit -m "진폭 스프레드시트 자동 백업 $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "변경 사항 없음 (오늘 스냅샷이 이미 있음)"
+          fi
