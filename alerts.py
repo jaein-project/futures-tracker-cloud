@@ -28,6 +28,24 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 로컬(내 컴퓨터)에서 테스트할 때는 터미널에서:
     export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
     python alerts.py   # 테스트 메시지 발송
+
+2026-09-04 추가: 반복감지 / 롤오버 / 워크플로우 오류 - 봇 더블체크(이모지 반응 + 스레드 답변) 기능
+──────────────────────────────────────────────────────────────────────────────
+재인님이 수동으로 하던 "이모지 체크 + 스레드 답글"을 봇이 자동으로 대신 해주는 기능. 이 3개
+알림만 웹훅이 아니라 Slack Bot Token(Web API, chat.postMessage)으로 보내서 메시지 ts(고유
+식별자)를 확보해야 나중에 그 메시지에 이모지/스레드 답변을 달 수 있음 (웹훅은 ts를 안 줘서
+불가능). 그 외 알림들(체크포인트 기록, 경제발표 등)은 기존 웹훅 방식 그대로 유지.
+
+준비:
+  1) Slack 앱 OAuth & Permissions에서 Bot Token Scopes에 chat:write, reactions:write 추가 후
+     워크스페이스에 설치 → Bot User OAuth Token(xoxb-...) 발급
+  2) GitHub 저장소 Settings > Secrets and variables > Actions 에 SLACK_BOT_TOKEN 이름으로 등록
+  3) 봇을 #trading-notify 채널에 초대 (/invite @봇이름)
+  4) 워크플로우 yml env에 SLACK_BOT_TOKEN 추가
+
+봇 토큰이 없거나 API 호출이 실패하면 자동으로 기존 웹훅 방식(send_alert)으로 대체 발송되므로,
+이 3개 알림 자체가 안 오는 일은 없음 - 다만 그 경우엔 이모지/스레드 더블체크만 그 알림에 한해
+동작하지 않음 (ts를 못 받아서).
 """
 
 import os
@@ -37,6 +55,10 @@ WEBHOOK_ENV_VAR = "SLACK_WEBHOOK_URL"                    # #trading-notify (문�
 WEBHOOK_ECONOMIC_ENV_VAR = "SLACK_WEBHOOK_URL_ECONOMIC"   # #economic-presentation (경제발표 예고)
 WEBHOOK_TRACKER_ENV_VAR = "SLACK_WEBHOOK_URL_TRACKER"     # #futures-tracker (진폭 기록)
 NTFY_TOPIC_ENV_VAR = "NTFY_TOPIC"
+
+BOT_TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
+TRADING_NOTIFY_CHANNEL_ID = "C0BS0HENLJ1"  # #trading-notify 채널 ID - 반복감지/롤오버/워크플로우 오류 더블체크 전용
+JAEIN_SLACK_USER_ID = "U0BRP2C3PMM"  # 재인님 개인 Slack 계정 - 롤오버 데이터 이상 시 태그용
 
 
 def _first_line(value: str) -> str:
@@ -103,6 +125,60 @@ def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEB
         return False
 
 
+def _slack_api_post(method: str, payload: dict) -> dict:
+    """Slack Web API(Bot Token) 호출 공통 함수 - 실패해도 예외를 던지지 않고
+    {"ok": False, ...} 형태를 반환함 (호출부에서 항상 안전하게 .get()으로 처리 가능)."""
+    token = _first_line(os.environ.get(BOT_TOKEN_ENV_VAR))
+    if not token:
+        return {"ok": False, "error": "no_bot_token"}
+    try:
+        res = requests.post(
+            f"https://slack.com/api/{method}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+            timeout=10,
+        )
+        data = res.json()
+        if not data.get("ok"):
+            print(f"❌ Slack API({method}) 실패: {data.get('error')}")
+        return data
+    except Exception as e:
+        print(f"❌ Slack API({method}) 호출 중 오류: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def post_bot_alert(message: str, title: str = None, channel: str = TRADING_NOTIFY_CHANNEL_ID) -> dict:
+    """봇 토큰(Web API)으로 메시지를 보내서 메시지 ts를 확보함 (나중에 이모지/스레드 답변을
+    달 때 필요 - 반복감지/롤오버/워크플로우 오류 3개 알림 전용, 2026-09-04 신규).
+    반환값: {"ts": ..., "channel": ...} - 봇 토큰이 없거나 실패하면 기존 웹훅 방식(send_alert)으로
+    자동 대체 발송하고 {"ts": None, "channel": None}을 반환함 (알림 자체는 정상 발송됨,
+    다만 이번 알림에 한해 이후 이모지/스레드 더블체크는 동작 안 함)."""
+    text = f"*{title}*\n{message}" if title else message
+    result = _slack_api_post("chat.postMessage", {"channel": channel, "text": text})
+    if result.get("ok"):
+        send_ntfy_alert(message, title)
+        return {"ts": result.get("ts"), "channel": result.get("channel", channel)}
+    print("   ℹ️ 봇 토큰 전송 실패/미설정 - 웹훅 방식으로 대체 발송")
+    send_alert(message, title=title)
+    return {"ts": None, "channel": None}
+
+
+def add_reaction(channel: str, ts: str, emoji: str) -> bool:
+    """메시지에 이모지 반응 추가 (channel/ts가 없으면 - 웹훅 대체 발송된 경우 등 - 조용히 스킵)"""
+    if not channel or not ts:
+        return False
+    result = _slack_api_post("reactions.add", {"channel": channel, "timestamp": ts, "name": emoji})
+    return bool(result.get("ok"))
+
+
+def reply_in_thread(channel: str, ts: str, message: str) -> bool:
+    """메시지에 스레드 답글 추가 (channel/ts가 없으면 조용히 스킵)"""
+    if not channel or not ts:
+        return False
+    result = _slack_api_post("chat.postMessage", {"channel": channel, "thread_ts": ts, "text": message})
+    return bool(result.get("ok"))
+
+
 def alert_symbol_missing(name: str, symbol: str):
     """특정 종목 데이터가 비어서(None) 왔을 때"""
     send_alert(
@@ -113,16 +189,21 @@ def alert_symbol_missing(name: str, symbol: str):
 
 
 def alert_workflow_exception(context: str, error: Exception):
-    """예외가 발생해서 워크플로우가 실패했을 때"""
-    send_alert(
+    """예외가 발생해서 워크플로우가 실패했을 때
+    2026-09-04 수정: 다음 폴링이 정상 완료되면 자동으로 '복구됐다'고 이모지+스레드 답변을
+    달아주는 기능을 위해 봇 토큰(Web API)으로 전송하고 ts/channel을 반환하도록 변경
+    (반환값은 process_workflow_recovery 관련 등록에 사용됨, google_sheet.register_workflow_error 참고)."""
+    return post_bot_alert(
         f"`{context}` 실행 중 오류가 발생했어요:\n```{error}```",
         title="❌ 워크플로우 오류",
     )
 
 
 def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):
-    """월물이 자동으로 롤오버됐을 때 - 확인용 알림 (원치 않으면 호출 안 해도 됨)"""
-    send_alert(
+    """월물이 자동으로 롤오버됐을 때 - 확인용 알림 (원치 않으면 호출 안 해도 됨)
+    2026-09-04 수정: 10분 뒤 새 월물 데이터가 정상적으로 들어오는지 봇이 확인해서 스레드로
+    답변해주는 기능을 위해 봇 토큰(Web API)으로 전송하고 ts/channel을 반환하도록 변경."""
+    return post_bot_alert(
         f"`{name}` 월물이 자동으로 바뀌었어요: `{old_symbol}` → `{new_symbol}`\n"
         f"영웅문/하나 HTS와 한 번 비교해서 맞는지 확인해주세요.",
         title="🔄 월물 자동 롤오버",
@@ -134,8 +215,10 @@ def alert_duplicate_streak(name, value, streak):
     (2번은 우연히 있을 수 있어서 정상 범위로 보고, 3번 이상부터만 알림 - 2026-08-26 기준 변경)
     2026-09-02 추가: 이 알림이 뜬 체크포인트는 10분 뒤 자동으로 한 번 더 재검증되고,
     값이 다르게 나오면 alert_streak_recheck_correction()이 별도로 보정 안내를 보냄.
-    2026-09-02 멘트 확정 (재인님 승인): "⏳ 10분 후 재검증 예정 (오류 확인 시 별도 알림)" 문구로 최종 확정."""
-    send_alert(
+    2026-09-02 멘트 확정 (재인님 승인): "⏳ 10분 후 재검증 예정 (오류 확인 시 별도 알림)" 문구로 최종 확정.
+    2026-09-04 수정: 재검증 결과(일치/보정)를 이 메시지에 이모지+스레드로 달아주는 기능을 위해
+    봇 토큰(Web API)으로 전송하고 ts/channel을 반환하도록 변경 (register_streak_recheck에 전달됨)."""
+    return post_bot_alert(
         f"`{name}` 값이 {streak}번 연속 동일한 값으로 기록되고 있어요.\n"
         f"월물 만기 혹은 데이터 소스에 문제가 있을 수 있으니 확인해주세요!\n"
         f"⏳ 10분 후 재검증 예정 (오류 확인 시 별도 알림)\n"
@@ -155,6 +238,64 @@ def alert_streak_recheck_correction(name, date_str, time_str, old_val, new_val):
         f"➡️ 기존 {old_val} → 재검증 {new_val}",
         title="🔧진폭 값 보정 완료🔧",
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# 2026-09-04 추가: 반복감지/롤오버/워크플로우 오류 - 봇 더블체크(이모지+스레드 답변) 문구
+# 재인님이 수동으로 하던 "이모지 체크 + 스레드 답글"을 봇이 대신 해주는 기능 (재인님 확정 문구).
+# 이모지는 전부 👀(eyes)로 통일 - "재인님이 직접 다 확인했다"는 뜻의 ✅ 체크는 재인님이 직접
+# 추가하는 것과 구분하기 위해 봇은 항상 👀만 사용함 (재인님 요청: "체크는 내가 할게!").
+# ─────────────────────────────────────────────────────────────
+
+RECHECK_EMOJI = "eyes"  # 👀
+
+# 반복감지 재검증 - 값이 그대로였을 때(문제 없음) 스레드 답변. 매번 같은 문구면 기계적으로
+# 보여서 두 문구를 번갈아 가면서 사용함 (재인님 요청 - 등록 순번의 홀/짝으로 alternate)
+STREAK_MATCH_REPLIES = [
+    "✅ 재검증 완료 - 값 그대로예요, 이상 없어요!",
+    "10분 후 재검증 결과 동일 - 문제 없는 걸로 확인했어요!",
+]
+
+STREAK_CORRECTION_REPLY = "재검증 결과 값이 달라서 보정했어요 - 아래 알림 참고해주세요 👇"
+
+ROLLOVER_NORMAL_REPLY = "10분 후 확인 결과, 새 월물 데이터 정상적으로 들어오고 있어요!"
+
+# 워크플로우 오류 복구 확인 - 역시 두 문구를 번갈아 가면서 사용
+WORKFLOW_RECOVERED_REPLIES = [
+    "다음 폴링에서 정상 처리 확인 - 복구됐어요!",
+    "다시 확인해보니 정상 작동 중이에요 - 복구 완료!",
+]
+
+
+def _rollover_abnormal_reply() -> str:
+    """롤오버 후 10분이 지나도 새 월물 데이터가 확인 안 될 때 - 재인님 태그 + HTS 확인 요청"""
+    return f"<@{JAEIN_SLACK_USER_ID}> 새 월물 데이터 확인 불가하여 HTS에서 확인해주세요!"
+
+
+def reply_streak_match(channel: str, ts: str, variant_idx: int):
+    """반복감지 재검증 결과 값이 동일(문제 없음)했을 때 - 👀 반응 + 스레드 답변(번갈아가며)"""
+    add_reaction(channel, ts, RECHECK_EMOJI)
+    reply_in_thread(channel, ts, STREAK_MATCH_REPLIES[variant_idx % len(STREAK_MATCH_REPLIES)])
+
+
+def reply_streak_correction(channel: str, ts: str):
+    """반복감지 재검증 결과 값이 달라서 보정했을 때 - 👀 반응 + 스레드 답변
+    (기존 alert_streak_recheck_correction 별도 재알람은 그대로 추가 발송됨)"""
+    add_reaction(channel, ts, RECHECK_EMOJI)
+    reply_in_thread(channel, ts, STREAK_CORRECTION_REPLY)
+
+
+def reply_rollover_check(channel: str, ts: str, data_ok: bool):
+    """롤오버 10분 후 새 월물 데이터 정상 유입 확인 - 스레드 답변만(이모지 없음, 재인님이
+    HTS 확인 후 직접 이모지 추가 예정 - 재인님 요청: "체크는 내가 할게!")"""
+    reply_in_thread(channel, ts, ROLLOVER_NORMAL_REPLY if data_ok else _rollover_abnormal_reply())
+
+
+def reply_workflow_recovered(channel: str, ts: str, variant_idx: int):
+    """다음 폴링에서 워크플로우가 예외 없이 정상 완료되어 복구 확인됐을 때 -
+    👀 반응 + 스레드 답변(번갈아가며)"""
+    add_reaction(channel, ts, RECHECK_EMOJI)
+    reply_in_thread(channel, ts, WORKFLOW_RECOVERED_REPLIES[variant_idx % len(WORKFLOW_RECOVERED_REPLIES)])
 
 
 # 체크포인트 내부 키(스케줄 계산용) → 실제 알림 문구에 쓰는 표시명

@@ -39,7 +39,19 @@ STREAK_RECHECK_SHEET = "반복감지_재검증"  # 2026-09-02 추가: 진폭 반
                                      # 한 번 더 계산해서 값이 다르면 진폭 시트를 보정하고 별도 알림을 보냄.
                                      # 이 탭은 그 "재검증 대기열"을 GitHub Actions 실행 간에도 유지하기 위한
                                      # 저장소 (매 실행이 별도 프로세스라 메모리에는 못 들고 있음).
+                                     # 2026-09-04 추가: 메시지ts/채널ID 2개 컬럼 추가 - 재검증 결과를
+                                     # 원본 알림 메시지에 이모지+스레드로 달아주기 위함 (봇 더블체크 기능).
 STREAK_RECHECK_DELAY_MINUTES = 10
+
+ROLLOVER_CHECK_SHEET = "롤오버_체크"  # 2026-09-04 추가: 월물 롤오버 알림이 뜨면
+                                  # ROLLOVER_CHECK_DELAY_MINUTES(10분) 뒤 새 월물 데이터가 정상적으로
+                                  # 들어오는지 확인해서 원본 알림에 스레드로 답변해주기 위한 대기열
+                                  # (재인님이 HTS로 직접 확인하는 동안, 봇이 먼저 데이터 유입 여부만 체크).
+ROLLOVER_CHECK_DELAY_MINUTES = 10
+
+WORKFLOW_ERROR_SHEET = "워크플로우_오류_추적"  # 2026-09-04 추가: 워크플로우 오류 알림이 뜨면 등록해뒀다가,
+                                          # 다음 폴링(gh_actions_poll.py)이 예외 없이 끝까지 정상
+                                          # 완료되면 '복구됐다'고 보고 원본 알림에 이모지+스레드 답변.
 
 TICK_SIZE = {
     "나스닥":   1,
@@ -168,22 +180,32 @@ def append_daily_summary(spreadsheet, date_str, first_row, last_row):
 
 
 def _get_or_create_streak_recheck_ws(spreadsheet):
-    """'반복감지_재검증' 탭이 없으면 새로 만들어서 반환 (2026-09-02 신설)."""
+    """'반복감지_재검증' 탭이 없으면 새로 만들어서 반환 (2026-09-02 신설).
+    2026-09-04: 이미 있는 탭이면 헤더에 메시지ts/채널ID 컬럼이 없을 경우 자동으로 추가함
+    (기존에 만들어진 실제 시트는 9개 컬럼이라, 코드만 바꿔서는 새 컬럼이 안 생기기 때문)."""
     try:
-        return spreadsheet.worksheet(STREAK_RECHECK_SHEET)
+        ws = spreadsheet.worksheet(STREAK_RECHECK_SHEET)
     except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=STREAK_RECHECK_SHEET, rows=2000, cols=9)
+        ws = spreadsheet.add_worksheet(title=STREAK_RECHECK_SHEET, rows=2000, cols=11)
         header = ["등록시각", "재검증예정시각", "날짜", "체크시간", "종목", "원래값",
-                  "day_start", "target_dt", "상태"]
+                  "day_start", "target_dt", "상태", "메시지ts", "채널ID"]
         ws.append_row(header, value_input_option="USER_ENTERED")
         return ws
+    header = ws.row_values(1)
+    if len(header) < 11:
+        ws.update_cell(1, 10, "메시지ts")
+        ws.update_cell(1, 11, "채널ID")
+    return ws
 
 
-def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_start, target_dt):
+def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_start, target_dt,
+                             message_ts=None, channel=None):
     """진폭 반복감지(3회 연속 동일값) 알림이 뜬 체크포인트를 STREAK_RECHECK_DELAY_MINUTES
     (기본 10분) 뒤 재검증 대상으로 등록. 그 자리에서 바로 재조회하면 Yahoo Finance가
     방금 지나간 5분봉을 아직 확정 못 했을 가능성이 커서(2026-09-02 엔화 22:25 사례로 확인됨)
-    일부러 시간차를 둠 - 재인님 요청."""
+    일부러 시간차를 둠 - 재인님 요청.
+    message_ts/channel: 2026-09-04 추가 - 원본 알림 메시지 위치(봇 더블체크용). 없어도(웹훅으로
+    대체 발송된 경우 등) 정상 동작하며, 그 경우 재검증 결과에 이모지/스레드만 안 달림."""
     try:
         ws = _get_or_create_streak_recheck_ws(spreadsheet)
         now = datetime.now(pytz.timezone(TIMEZONE))
@@ -191,6 +213,7 @@ def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_
         ws.append_row([
             now.isoformat(), recheck_at.isoformat(), date_str, time_str, name, str(old_val),
             day_start.isoformat(), target_dt.isoformat(), "대기",
+            message_ts or "", channel or "",
         ], value_input_option="USER_ENTERED")
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 등록 오류: {e}")
@@ -198,7 +221,9 @@ def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_
 
 def get_due_streak_rechecks(spreadsheet):
     """'상태'가 '대기'이고 재검증예정시각이 이미 지난 항목들을 반환.
-    day_start/target_dt 파싱에 실패하면(수동 편집 등) 안전하게 건너뜀."""
+    day_start/target_dt 파싱에 실패하면(수동 편집 등) 안전하게 건너뜀.
+    message_ts/channel은 2026-09-04 이전에 등록된 옛날 행에는 없을 수 있어서 없으면 None 반환
+    (호출부에서 없으면 이모지/스레드 없이 조용히 건너뜀)."""
     result = []
     try:
         ws = _get_or_create_streak_recheck_ws(spreadsheet)
@@ -226,6 +251,8 @@ def get_due_streak_rechecks(spreadsheet):
                 "old_val": row[5],
                 "day_start": day_start,
                 "target_dt": target_dt,
+                "message_ts": row[9].strip() if len(row) > 9 and row[9].strip() else None,
+                "channel": row[10].strip() if len(row) > 10 and row[10].strip() else None,
             })
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 조회 오류: {e}")
@@ -239,6 +266,124 @@ def mark_streak_recheck_done(spreadsheet, row_idx, status):
         ws.update_cell(row_idx, 9, status)
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 상태 갱신 오류: {e}")
+
+
+def _get_or_create_rollover_check_ws(spreadsheet):
+    """'롤오버_체크' 탭이 없으면 새로 만들어서 반환 (2026-09-04 신설)."""
+    try:
+        return spreadsheet.worksheet(ROLLOVER_CHECK_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=ROLLOVER_CHECK_SHEET, rows=2000, cols=9)
+        header = ["등록시각", "확인예정시각", "날짜", "종목", "이전월물", "신규월물",
+                  "메시지ts", "채널ID", "상태"]
+        ws.append_row(header, value_input_option="USER_ENTERED")
+        return ws
+
+
+def register_rollover_check(spreadsheet, date_str, name, old_symbol, new_symbol, message_ts, channel):
+    """월물 롤오버 알림이 뜬 뒤 ROLLOVER_CHECK_DELAY_MINUTES(10분) 뒤 새 월물 데이터가
+    정상적으로 들어오는지 확인하기 위한 대기열 등록 (2026-09-04 신규 - 재인님 요청)."""
+    try:
+        ws = _get_or_create_rollover_check_ws(spreadsheet)
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        check_at = now + timedelta(minutes=ROLLOVER_CHECK_DELAY_MINUTES)
+        ws.append_row([
+            now.isoformat(), check_at.isoformat(), date_str, name, old_symbol, new_symbol,
+            message_ts or "", channel or "", "대기",
+        ], value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"   ⚠️ 롤오버_체크 등록 오류: {e}")
+
+
+def get_due_rollover_checks(spreadsheet):
+    """'상태'가 '대기'이고 확인예정시각이 이미 지난 롤오버 체크 항목들을 반환."""
+    result = []
+    try:
+        ws = _get_or_create_rollover_check_ws(spreadsheet)
+        all_values = ws.get_all_values()
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        for i, row in enumerate(all_values[1:], start=2):
+            if len(row) < 9 or row[8].strip() != "대기":
+                continue
+            try:
+                check_at = datetime.fromisoformat(row[1].strip())
+            except Exception:
+                continue
+            if check_at > now:
+                continue
+            result.append({
+                "row_idx": i,
+                "name": row[3],
+                "old_symbol": row[4],
+                "new_symbol": row[5],
+                "message_ts": row[6].strip() if row[6].strip() else None,
+                "channel": row[7].strip() if row[7].strip() else None,
+            })
+    except Exception as e:
+        print(f"   ⚠️ 롤오버_체크 조회 오류: {e}")
+    return result
+
+
+def mark_rollover_check_done(spreadsheet, row_idx, status):
+    """롤오버 체크 처리 완료 표시 ('완료-정상' / '완료-이상' / '완료-조회실패')"""
+    try:
+        ws = _get_or_create_rollover_check_ws(spreadsheet)
+        ws.update_cell(row_idx, 9, status)
+    except Exception as e:
+        print(f"   ⚠️ 롤오버_체크 상태 갱신 오류: {e}")
+
+
+def _get_or_create_workflow_error_ws(spreadsheet):
+    """'워크플로우_오류_추적' 탭이 없으면 새로 만들어서 반환 (2026-09-04 신설)."""
+    try:
+        return spreadsheet.worksheet(WORKFLOW_ERROR_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=WORKFLOW_ERROR_SHEET, rows=2000, cols=5)
+        header = ["등록시각", "컨텍스트", "메시지ts", "채널ID", "상태"]
+        ws.append_row(header, value_input_option="USER_ENTERED")
+        return ws
+
+
+def register_workflow_error(spreadsheet, context, message_ts, channel):
+    """워크플로우 오류 알림이 뜨면 등록 - 다음 폴링(gh_actions_poll.py)이 예외 없이 끝까지
+    정상 완료되면 자동으로 '복구됐다'고 보고 원본 알림에 이모지+스레드 답변을 달아줌
+    (2026-09-04 신규 - 재인님 요청)."""
+    try:
+        ws = _get_or_create_workflow_error_ws(spreadsheet)
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        ws.append_row([now.isoformat(), context, message_ts or "", channel or "", "대기"],
+                       value_input_option="USER_ENTERED")
+    except Exception as e:
+        print(f"   ⚠️ 워크플로우_오류_추적 등록 오류: {e}")
+
+
+def get_pending_workflow_errors(spreadsheet):
+    """'상태'가 '대기'인 워크플로우 오류 항목들을 전부 반환 (시간 조건 없음 - 다음 폴링이
+    한 번이라도 예외 없이 끝까지 돌면 그 시점에 전부 '복구됨'으로 처리)."""
+    result = []
+    try:
+        ws = _get_or_create_workflow_error_ws(spreadsheet)
+        all_values = ws.get_all_values()
+        for i, row in enumerate(all_values[1:], start=2):
+            if len(row) < 5 or row[4].strip() != "대기":
+                continue
+            result.append({
+                "row_idx": i,
+                "message_ts": row[2].strip() if row[2].strip() else None,
+                "channel": row[3].strip() if row[3].strip() else None,
+            })
+    except Exception as e:
+        print(f"   ⚠️ 워크플로우_오류_추적 조회 오류: {e}")
+    return result
+
+
+def mark_workflow_error_resolved(spreadsheet, row_idx, status="완료-복구"):
+    """워크플로우 오류 복구 확인 완료 표시"""
+    try:
+        ws = _get_or_create_workflow_error_ws(spreadsheet)
+        ws.update_cell(row_idx, 5, status)
+    except Exception as e:
+        print(f"   ⚠️ 워크플로우_오류_추적 상태 갱신 오류: {e}")
 
 
 def update_amplitude_cell(ws, date_str, time_str, name, new_val):

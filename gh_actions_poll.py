@@ -310,8 +310,11 @@ def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_d
             if all_asia:
                 print(f"   ℹ️ [{name}] {streak}회 연속 동일값({new_val}) - 전부 아시아장 체크포인트라 알림 생략")
                 continue
-            alert_duplicate_streak(name, new_val, streak)
-            register_streak_recheck(spreadsheet, date_str, time_str, name, new_val, day_start, target_dt)
+            result = alert_duplicate_streak(name, new_val, streak)
+            register_streak_recheck(
+                spreadsheet, date_str, time_str, name, new_val, day_start, target_dt,
+                message_ts=result.get("ts"), channel=result.get("channel"),
+            )
 
 def process_checkpoints(ws, now: datetime):
     sched = SUMMER_SCHEDULE if is_summer_time() else WINTER_SCHEDULE
@@ -694,7 +697,7 @@ def check_rollover_alerts(ws, now: datetime):
     종목별 영구 중복 방지하도록 변경."""
     from contract_roll import CONTRACT_RULES, get_symbol
     from alerts import alert_symbol_rolled
-    from google_sheet import is_reminder_sent, mark_reminder_sent
+    from google_sheet import is_reminder_sent, mark_reminder_sent, register_rollover_check
     today = now.date()
     today_str = f"{today.year}. {today.month}. {today.day}"
     yesterday = today - timedelta(days=1)
@@ -712,8 +715,34 @@ def check_rollover_alerts(ws, now: datetime):
         if is_reminder_sent(spreadsheet, today_str, label):
             continue
         print(f"🔄 [{name}] 월물 자동 롤오버 감지: {old_symbol} → {new_symbol}")
-        alert_symbol_rolled(name, old_symbol, new_symbol)
+        result = alert_symbol_rolled(name, old_symbol, new_symbol)
         mark_reminder_sent(spreadsheet, today_str, label)
+        register_rollover_check(
+            spreadsheet, today_str, name, old_symbol, new_symbol,
+            result.get("ts"), result.get("channel"),
+        )
+
+
+def process_rollover_checks(ws, now: datetime):
+    """월물 롤오버 알림 후 ROLLOVER_CHECK_DELAY_MINUTES(10분) 뒤, 새 월물 데이터가 정상적으로
+    들어오고 있는지 확인해서 원본 알림에 스레드로만 답변 (이모지는 안 닮 - 재인님이 HTS로
+    직접 확인한 뒤 본인이 이모지를 추가할 예정, 2026-09-04 신규 - 재인님 요청)."""
+    from google_sheet import get_due_rollover_checks, mark_rollover_check_done
+    from alerts import reply_rollover_check
+    spreadsheet = ws.spreadsheet
+    due = get_due_rollover_checks(spreadsheet)
+    for item in due:
+        name = item["name"]
+        symbol, multiplier = SYMBOLS.get(name, (None, None))
+        if not symbol:
+            mark_rollover_check_done(spreadsheet, item["row_idx"], "완료-조회실패")
+            continue
+        day_start = trading_day_start(now)
+        hl = get_intraday_high_low(symbol, day_start, now, multiplier)
+        data_ok = hl is not None
+        if item["message_ts"] and item["channel"]:
+            reply_rollover_check(item["channel"], item["message_ts"], data_ok)
+        mark_rollover_check_done(spreadsheet, item["row_idx"], "완료-정상" if data_ok else "완료-이상")
 
 
 def process_streak_rechecks(ws):
@@ -723,7 +752,7 @@ def process_streak_rechecks(ws):
     값이 그대로면 조용히 '완료-일치'로 표시하고 넘어가고, 값이 다르면 진폭 시트를 보정한 뒤
     해당 종목만 따로 Slack 알림(alert_streak_recheck_correction)을 보냄."""
     from google_sheet import get_due_streak_rechecks, mark_streak_recheck_done, update_amplitude_cell
-    from alerts import alert_streak_recheck_correction
+    from alerts import alert_streak_recheck_correction, reply_streak_match, reply_streak_correction
     spreadsheet = ws.spreadsheet
     due = get_due_streak_rechecks(spreadsheet)
     for item in due:
@@ -741,11 +770,15 @@ def process_streak_rechecks(ws):
         old_val = item["old_val"]
         if new_val == "" or str(new_val) == str(old_val):
             print(f"   ✅ [{name}] 재검증 결과 동일 - {item['date_str']} {item['time_str']} ({old_val}틱)")
+            if item["message_ts"] and item["channel"]:
+                reply_streak_match(item["channel"], item["message_ts"], item["row_idx"])
             mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-일치")
             continue
         print(f"   🔧 [{name}] 재검증 결과 값 변경 - {item['date_str']} {item['time_str']}: {old_val} → {new_val}틱")
         updated = update_amplitude_cell(ws, item["date_str"], item["time_str"], name, new_val)
         if updated:
+            if item["message_ts"] and item["channel"]:
+                reply_streak_correction(item["channel"], item["message_ts"])
             alert_streak_recheck_correction(name, item["date_str"], item["time_str"], old_val, new_val)
             mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-보정")
         else:
@@ -762,14 +795,31 @@ def main():
     check_rollover_alerts(ws, now)
     process_checkpoints(ws, now)
     process_streak_rechecks(ws)
+    process_rollover_checks(ws, now)
     process_economic(ws, now)
     process_daily_digest(ws, now)
     process_holiday_calendar_reminder(spreadsheet, now)
+    return spreadsheet
 
 if __name__ == "__main__":
     try:
-        main()
+        _spreadsheet = main()
+        # 2026-09-04 추가: 이번 실행이 예외 없이 끝까지 정상 완료됐다는 뜻이므로,
+        # 아직 '대기' 상태인 워크플로우 오류가 있으면 전부 '복구됐다'고 보고
+        # 원본 알림에 👀 반응 + 스레드 답변을 달아줌 (재인님 요청 - 봇 더블체크 기능)
+        from google_sheet import get_pending_workflow_errors, mark_workflow_error_resolved
+        from alerts import reply_workflow_recovered
+        for _item in get_pending_workflow_errors(_spreadsheet):
+            if _item["message_ts"] and _item["channel"]:
+                reply_workflow_recovered(_item["channel"], _item["message_ts"], _item["row_idx"])
+            mark_workflow_error_resolved(_spreadsheet, _item["row_idx"])
     except Exception as e:
         from alerts import alert_workflow_exception
-        alert_workflow_exception("gh_actions_poll.py", e)
+        from google_sheet import register_workflow_error
+        _result = alert_workflow_exception("gh_actions_poll.py", e)
+        try:
+            _spreadsheet = get_client().open_by_key(SPREADSHEET_ID)
+            register_workflow_error(_spreadsheet, "gh_actions_poll.py", _result.get("ts"), _result.get("channel"))
+        except Exception as _reg_e:
+            print(f"   ⚠️ 워크플로우 오류 등록 실패: {_reg_e}")
         raise
