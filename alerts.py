@@ -62,6 +62,13 @@ FUTURES_TRACKER_CHANNEL_ID = "C0BTBE5EJM6"  # #futures-tracker 채널 ID - 2026-
                                              # 반복감지 재검증 보정 결과를 체크포인트 메시지 스레드에 달기 위해 필요
 JAEIN_SLACK_USER_ID = "U0BRP2C3PMM"  # 재인님 개인 Slack 계정 - 롤오버 데이터 이상 시 태그용
 
+BOT_TOKEN_SYSTEM_ENV_VAR = "SLACK_BOT_TOKEN_SYSTEM"  # systembot 전용 토큰 (2026-09-05 신규)
+SYSTEM_NOTIFY_CHANNEL_ID = "C0BV001N33P"  # #system-notify 채널 ID - 2026-09-05 신설: 트레이딩
+                                           # 신호와 무관한 "시스템/인프라" 성격 알림(백업 등) 전용
+                                           # 채널. #trading-notify는 실제 트레이딩 데이터 문제만
+                                           # 남기고 싶다는 재인님 요청으로 분리. 전용 봇(systembot)을
+                                           # 이 채널에 초대해서 사용.
+
 
 def _first_line(value: str) -> str:
     """환경변수 값에 줄바꿈/보이지 않는 문자가 섞여 들어간 경우 방어용 - 첫 줄만 정리해서 사용"""
@@ -127,10 +134,12 @@ def send_slack_alert(message: str, title: str = None, webhook_env_var: str = WEB
         return False
 
 
-def _slack_api_post(method: str, payload: dict) -> dict:
+def _slack_api_post(method: str, payload: dict, token_env_var: str = BOT_TOKEN_ENV_VAR) -> dict:
     """Slack Web API(Bot Token) 호출 공통 함수 - 실패해도 예외를 던지지 않고
-    {"ok": False, ...} 형태를 반환함 (호출부에서 항상 안전하게 .get()으로 처리 가능)."""
-    token = _first_line(os.environ.get(BOT_TOKEN_ENV_VAR))
+    {"ok": False, ...} 형태를 반환함 (호출부에서 항상 안전하게 .get()으로 처리 가능).
+    token_env_var: 2026-09-05 추가 - 기본은 기존 봇(SLACK_BOT_TOKEN)이지만, systembot 같은
+    별도 봇 토큰으로 보내야 하는 경우(alert_backup_error 등) 지정 가능."""
+    token = _first_line(os.environ.get(token_env_var))
     if not token:
         return {"ok": False, "error": "no_bot_token"}
     try:
@@ -202,6 +211,98 @@ def alert_workflow_exception(context: str, error: Exception):
         f"`{context}` 실행 중 오류가 발생했어요:\n```{error}```",
         title="❌ 워크플로우 오류",
     )
+
+
+def _classify_backup_error(error: Exception):
+    """백업 실패 원인을 알려진 패턴 몇 가지로 분류해서 (에러종류, 대응방법)을 반환.
+    2026-09-05 신규 - 재인님이 개발자가 아니라서 원본 파이썬 에러 메시지만 봐서는 뭐가 문제인지
+    못 알아보시겠다고 하셔서, 알려진 원인별로 쉬운 말 설명 + 대응방법을 붙여주기 위해 만듦.
+    어느 패턴에도 안 걸리면 마지막 else로 "원인 미확인" 안내를 반환함."""
+    text = str(error)
+    type_name = type(error).__name__
+
+    if "invalid_grant" in text or "expired or revoked" in text or type_name == "RefreshError":
+        return (
+            "구글 인증 만료",
+            '봇이 구글에 로그인하는 열쇠가 만료됐어요. Claude한테 "구글 인증 다시 해줘"라고 '
+            "말씀해주시면 새로 발급받아서 연결해드릴게요.",
+        )
+    if any(k in text for k in ("429", "Rate Limit", "rateLimitExceeded", "quotaExceeded", "userRateLimitExceeded")):
+        return (
+            "API 사용량 초과",
+            "구글 쪽에 요청이 잠깐 몰려서 생긴 문제예요. 대부분 다음 날 자동으로 다시 시도되면서 "
+            "해결돼요. 이 알림이 며칠 계속 오면 꼭 말씀해주세요.",
+        )
+    if any(k in text for k in ("404", "File not found", "notFound")):
+        return (
+            "스프레드시트를 찾을 수 없음",
+            "시트가 삭제됐거나 다른 위치로 옮겨졌을 수 있어요. 구글 드라이브 휴지통을 확인해주시고, "
+            "실수로 지우신 거면 복구해주세요.",
+        )
+    if type_name in ("ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout", "ConnectionResetError") \
+            or "Read timed out" in text:
+        return (
+            "네트워크 오류",
+            "구글 서버가 잠깐 불안정했던 것 같아요 (재시도 3번 다 실패한 경우에만 옴). 대부분 "
+            "다음 날 자동으로 정상화돼요. 계속 반복되면 말씀해주세요.",
+        )
+    if "too large" in text.lower():
+        return (
+            "시트가 너무 커서 내보내기 실패",
+            "스프레드시트 데이터가 너무 커져서 엑셀 파일로 변환이 안 되는 상황이에요. 코드를 "
+            "손봐야 하는 문제라 Claude한테 알려주시면 고쳐드릴게요.",
+        )
+    return (
+        "원인 미확인 오류",
+        "아직 정리 안 된 종류의 오류예요. 아래 원본 메시지를 그대로 Claude한테 보여주시면 "
+        "원인을 확인해드릴게요.",
+    )
+
+
+def alert_backup_error(error: Exception):
+    """진폭 스프레드시트 백업(backup_sheet.py) 실행 중 예외가 발생했을 때 #system-notify
+    채널(전용 봇 systembot)로 알림 (2026-09-05 신규 - 재인님 요청).
+    기존 alert_workflow_exception과 별개 함수: 채널/봇 토큰이 다르고(#trading-notify는
+    실제 트레이딩 데이터 문제 전용으로 남겨두기로 함), 원인별 쉬운 설명 + 대응방법을 붙여서
+    보내 재인님이 원본 에러만 보고도 뭘 해야 할지 바로 알 수 있게 함."""
+    category, guidance = _classify_backup_error(error)
+    text = (
+        f"*🚨스프레드시트 백업 오류🚨*\n"
+        f"<@{JAEIN_SLACK_USER_ID}> '{category}'되어 오류가 발생했어요!\n"
+        f"{guidance}\n"
+        f"```{error}```"
+    )
+    result = _slack_api_post(
+        "chat.postMessage", {"channel": SYSTEM_NOTIFY_CHANNEL_ID, "text": text},
+        token_env_var=BOT_TOKEN_SYSTEM_ENV_VAR,
+    )
+    if result.get("ok"):
+        return {"ts": result.get("ts"), "channel": result.get("channel", SYSTEM_NOTIFY_CHANNEL_ID)}
+    print("   ℹ️ systembot 전송 실패/미설정 - #trading-notify 웹훅으로 대체 발송")
+    send_alert(f"(systembot 전송 실패로 대체 발송)\n{text}", webhook_env_var=WEBHOOK_ENV_VAR)
+    return {"ts": None, "channel": None}
+
+
+def alert_backup_github_push_failed():
+    """백업 워크플로우에서 드라이브 백업/xlsx 스냅샷 생성까지는 성공했는데, 그 결과를 GitHub에
+    커밋/푸시하는 마지막 단계 자체가 실패했을 때 전용 알림 (2026-09-05 신규).
+    이 시점엔 backup_sheet.py(파이썬)는 이미 정상 종료된 뒤라 구글 드라이브 백업은 살아있는
+    상태 - 그래서 다른 백업 오류들과 달리 심각도가 낮다는 걸 문구에서부터 알려줌.
+    워크플로우 yml의 git push 단계가 실패했을 때(if: 조건으로) 별도 스텝에서 호출됨."""
+    text = (
+        f"*🚨스프레드시트 백업 오류🚨*\n"
+        f"<@{JAEIN_SLACK_USER_ID}> 'GitHub 저장 실패'로 오류가 발생했어요! "
+        f"(구글 드라이브 백업은 정상적으로 됐어요)\n"
+        f"급하진 않아요 - 드라이브 쪽엔 이미 백업이 살아있어요. 계속 반복되면 Claude한테 확인 요청해주세요.\n"
+        f"```GitHub Actions: 커밋/푸시 스텝 실패 (Process completed with exit code 1)```"
+    )
+    result = _slack_api_post(
+        "chat.postMessage", {"channel": SYSTEM_NOTIFY_CHANNEL_ID, "text": text},
+        token_env_var=BOT_TOKEN_SYSTEM_ENV_VAR,
+    )
+    if not result.get("ok"):
+        print("   ℹ️ systembot 전송 실패/미설정 - #trading-notify 웹훅으로 대체 발송")
+        send_alert(f"(systembot 전송 실패로 대체 발송)\n{text}", webhook_env_var=WEBHOOK_ENV_VAR)
 
 
 def alert_symbol_rolled(name: str, old_symbol: str, new_symbol: str):

@@ -28,7 +28,7 @@ import requests
 import pytz
 
 from google_sheet import get_credentials, SPREADSHEET_ID
-from alerts import alert_workflow_exception
+from alerts import alert_backup_error
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 TIMEZONE = "Asia/Seoul"
@@ -174,15 +174,18 @@ def main():
 
 if __name__ == "__main__":
     # 2026-09-05 추가 (재인님 요청): 평소엔 조용히 백업만 하고, 실패했을 때만 Slack으로 알림.
-    # 기존 워크플로우 오류 알림(alert_workflow_exception)을 그대로 재사용 - #trading-notify로
-    # "❌ 워크플로우 오류" 알림이 감. 단, 진폭 통합 폴링(gh_actions_poll.py)의 자동 복구 확인
-    # 큐(google_sheet.register_workflow_error)에는 등록하지 않음 - 그 큐는 "다음 5분 폴링이
-    # 정상 완료되면 복구된 것으로 간주"하는 로직인데, 백업 실패와는 별개 워크플로우라 5분 폴링이
-    # 잘 도는 것과 백업이 실제로 다시 성공하는 것은 무관함 (엉뚱한 "복구됨" 오탐 방지).
+    # 2026-09-05 수정(2차): #trading-notify는 실제 트레이딩 데이터 문제 전용으로 남겨두기로
+    # 해서, 전용 채널(#system-notify, 봇 systembot)로 보내는 alert_backup_error로 교체.
+    # 원인을 6가지 알려진 패턴으로 분류해서 쉬운 말 설명 + 대응방법까지 붙여서 보내줌
+    # (재인님이 원본 파이썬 에러만 봐서는 뭐가 문제인지 못 알아보시겠다고 해서).
+    # 진폭 통합 폴링(gh_actions_poll.py)의 자동 복구 확인 큐(google_sheet.register_workflow_error)
+    # 에는 등록하지 않음 - 그 큐는 "다음 5분 폴링이 정상 완료되면 복구된 것으로 간주"하는
+    # 로직인데, 백업 실패와는 별개 워크플로우라 5분 폴링이 잘 도는 것과 백업이 실제로 다시
+    # 성공하는 것은 무관함 (엉뚱한 "복구됨" 오탐 방지).
     # 알림 후에는 예외를 다시 던져서 GitHub Actions 쪽에도 그대로 실패(빨간 X)로 표시되게 함.
     try:
         main()
     except Exception as e:
         print(f"❌ 백업 실패: {e}")
-        alert_workflow_exception("진폭 스프레드시트 자동 백업", e)
+        alert_backup_error(e)
         raise
