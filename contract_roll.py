@@ -24,6 +24,14 @@
      실제 거래소 상황과 며칠씩 어긋날 수 있어서(2026-08-26, 천연가스 NGU26→NGV26
      롤오버가 날짜 규칙보다 며칠 더 일찍 실제로 일어난 걸 하나HTS로 확인함),
      아래 3번 거래량 자동 비교로 실시간 보정합니다.
+     ⚠️ 2026-09-06 발견/수정: 오일(CL)의 roll_days_before가 25로 잘못 설정돼 있어서,
+     10월물(V26)이 실제 만기(약 9/22, CME 공식 규칙 "인도월 전달 25일의 3영업일 전")보다
+     "무려 약 2주 이상 이른" 9/6(일)에 11월물(X26)로 조기 롤오버되는 버그가 있었음
+     (재인님이 영웅문 HTS에서는 아직 CLV26인데 봇 알림은 CLX26으로 바뀌었다고 확인해줘서
+     발견됨). 아래 3번 거래량 보정은 "날짜규칙보다 실제 롤오버가 늦게 감지된 경우"만
+     앞으로 밀어주지, 지금처럼 "날짜규칙이 실제보다 너무 일찍 넘어간 경우"를 되돌리는
+     기능은 없어서 자동으로 복구되지 않음 - roll_days_before를 12(실제 만기보다 며칠
+     여유를 두고 9/19쯤 넘어가도록)로 낮춰서 수정함.
   3) 계산된 심볼로 Yahoo Finance에서 데이터를 못 가져오거나 비정상적으로 비어
      있으면 알림이 갑니다 (alerts.py 참고).
   4) **거래량 기반 자동 보정 (2026-08-26 추가)**: 위 1)/2)의 날짜 규칙으로 일단
@@ -59,7 +67,7 @@ CONTRACT_RULES = {
     "나스닥":   {"cycle": [3, 6, 9, 12],        "roll_days_before": 8,  "expiry_rule": "third_friday_same_month", "exchange": "CME"},
     "유로":     {"cycle": [3, 6, 9, 12],        "roll_days_before": 8,  "expiry_rule": "third_friday_same_month", "exchange": "CME"},
     "엔화":     {"cycle": [3, 6, 9, 12],        "roll_days_before": 8,  "expiry_rule": "third_friday_same_month", "exchange": "CME"},
-    "오일":     {"cycle": list(range(1, 13)),   "roll_days_before": 25, "expiry_rule": "n_days_before_month_start", "exchange": "NYM"},
+    "오일":     {"cycle": list(range(1, 13)),   "roll_days_before": 12, "expiry_rule": "n_days_before_month_start", "exchange": "NYM"},  # 2026-09-06 수정: 25 -> 12 (기존 값은 실제 만기보다 2주 이상 일찍 롤오버되는 버그, 위 docstring 참고)
     "천연가스": {"cycle": list(range(1, 13)),   "roll_days_before": 4,  "expiry_rule": "n_days_before_month_start", "exchange": "NYM"},
     "구리":     {"cycle": [3, 5, 7, 9, 12],     "roll_days_before": 5,  "expiry_rule": "n_days_before_month_start", "exchange": "CMX"},
     "골드":     {"cycle": [2, 4, 6, 8, 12], "roll_days_before": 5,  "expiry_rule": "n_days_before_month_start", "exchange": "CMX"},
