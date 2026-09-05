@@ -12,6 +12,8 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
                                    발표 20분후 전/후 비교 - 전부 시트에는 기록하지 않는 순수 알림)
   - SLACK_WEBHOOK_URL_TRACKER   → #futures-tracker (체크포인트 + 경제발표 전/후 5분, 진폭이 실제로
                                    시트에 기록될 때만 오는 알림)
+  (2026-09-06부터 SLACK_WEBHOOK_URL / _TRACKER는 평소엔 안 쓰이는 비상 백업 용도로만 남음 -
+   아래 '2026-09-06 봇 통일' 참고. SLACK_WEBHOOK_URL_ECONOMIC은 여전히 매번 이 방식 그대로 사용.)
 
 사용 전 준비:
   1) Slack 앱의 Incoming Webhooks 페이지에서 채널별로 "Add New Webhook to
@@ -31,21 +33,28 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 
 2026-09-04 추가: 반복감지 / 롤오버 / 워크플로우 오류 - 봇 더블체크(이모지 반응 + 스레드 답변) 기능
 ──────────────────────────────────────────────────────────────────────────────
-재인님이 수동으로 하던 "이모지 체크 + 스레드 답글"을 봇이 자동으로 대신 해주는 기능. 이 3개
-알림만 웹훅이 아니라 Slack Bot Token(Web API, chat.postMessage)으로 보내서 메시지 ts(고유
-식별자)를 확보해야 나중에 그 메시지에 이모지/스레드 답변을 달 수 있음 (웹훅은 ts를 안 줘서
-불가능). 그 외 알림들(체크포인트 기록, 경제발표 등)은 기존 웹훅 방식 그대로 유지.
+재인님이 수동으로 하던 "이모지 체크 + 스레드 답글"을 봇이 자동으로 대신 해주는 기능. 이 알림들은
+웹훅이 아니라 Slack Bot Token(Web API, chat.postMessage)으로 보내서 메시지 ts(고유 식별자)를
+확보해야 나중에 그 메시지에 이모지/스레드 답변을 달 수 있음 (웹훅은 ts를 안 줘서 불가능).
 
 준비:
   1) Slack 앱 OAuth & Permissions에서 Bot Token Scopes에 chat:write, reactions:write 추가 후
      워크스페이스에 설치 → Bot User OAuth Token(xoxb-...) 발급
   2) GitHub 저장소 Settings > Secrets and variables > Actions 에 SLACK_BOT_TOKEN 이름으로 등록
-  3) 봇을 #trading-notify 채널에 초대 (/invite @봇이름)
+  3) 봇을 #trading-notify, #futures-tracker 채널에 초대 (/invite @봇이름)
   4) 워크플로우 yml env에 SLACK_BOT_TOKEN 추가
 
 봇 토큰이 없거나 API 호출이 실패하면 자동으로 기존 웹훅 방식(send_alert)으로 대체 발송되므로,
-이 3개 알림 자체가 안 오는 일은 없음 - 다만 그 경우엔 이모지/스레드 더블체크만 그 알림에 한해
+알림 자체가 안 오는 일은 없음 - 다만 그 경우엔 이모지/스레드 더블체크만 그 알림에 한해
 동작하지 않음 (ts를 못 받아서).
+
+2026-09-06 봇 통일: "봇이 너무 많아서 헷갈린다"는 재인님 피드백으로, #trading-notify /
+#futures-tracker로 가는 알림은 (더블체크가 필요없는 단순 알림들까지) 전부 웹훅 대신
+post_bot_alert()(봇 토큰 방식)로 통일함. 이제 이 두 채널에 오는 알림은 전부 같은 봇
+정체성(이름/아이콘)으로 표시되고, 웹훅은 봇 토큰 호출이 실패했을 때만 조용히 쓰이는
+비상 백업으로만 남음 - 평소엔 안 보임.
+#economic-presentation은 지금까지 채널ID를 코드에 등록해둔 적이 없어서(웹훅 URL만 써왔음)
+이번엔 그대로 웹훅 방식으로 남겨둠 - 통일하려면 그 채널 ID와 봇 초대가 추가로 필요함.
 """
 
 import os
@@ -194,11 +203,15 @@ def reply_in_thread(channel: str, ts: str, message: str) -> bool:
 
 
 def alert_symbol_missing(name: str, symbol: str):
-    """특정 종목 데이터가 비어서(None) 왔을 때"""
-    send_alert(
+    """특정 종목 데이터가 비어서(None) 왔을 때
+    2026-09-06 수정: #trading-notify에 웹훅 대신 봇 토큰(post_bot_alert)으로 보내도록 통일
+    (아래 '2026-09-06 봇 통일' 안내 참고)."""
+    post_bot_alert(
         f"`{name}` ({symbol}) 데이터를 못 가져왔어요. 월물 코드가 만기 지났거나, "
         f"Yahoo Finance 쪽 문제일 수 있어요. 확인해주세요.",
         title="⚠️ 진폭 데이터 누락",
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
@@ -508,10 +521,12 @@ def alert_economic_recorded(date_str: str, note: str, names: list = None, detail
     if detail:
         message += f"\n{detail}"
     title = f"✏️ {date_str} 경제 발표 {'후' if is_post else '전'} 진폭 업데이트 완료"
-    send_alert(
+    # 2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송 (아래 '2026-09-06 봇 통일' 참고)
+    post_bot_alert(
         message,
         title=title,
-        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+        channel=FUTURES_TRACKER_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
     )
 
 
@@ -562,7 +577,8 @@ def alert_daily_summary(date_str: str, comparison: str):
     아시아장초반(09:00)으로 당겨져서, 문구도 특정 체크포인트 이름을 박지 않고 일반화함.
     comparison: format_ticks_comparison()으로 만든 '{종목} {시작값} > {마감값} (증감)' 줄들"""
     message = f"⏰ 전일({date_str}) 진폭 결과\n하루 첫 체크(아시아장초반) 대비 미장마감, 최종 진폭이에요!\n{comparison}"
-    send_alert(message, webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
+    # 2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송 (아래 '2026-09-06 봇 통일' 참고)
+    post_bot_alert(message, channel=FUTURES_TRACKER_CHANNEL_ID, fallback_webhook_env_var=WEBHOOK_TRACKER_ENV_VAR)
 
 
 # 완전휴장일 안내에 곁들이는 휴일별 인사말 (굿프라이데이는 축하 성격이 아니라 인사말 없음)
@@ -574,37 +590,44 @@ HOLIDAY_GREETINGS = {
 
 
 def alert_full_holiday_today(date_str: str, holiday_name: str):
-    """완전휴장일 당일, 아시아장중 시점에 1회 - #futures-tracker + #trading-notify 동시발송."""
+    """완전휴장일 당일, 아시아장중 시점에 1회 - #futures-tracker + #trading-notify 동시발송.
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송 (아래 '2026-09-06 봇 통일' 참고)."""
     greeting = HOLIDAY_GREETINGS.get(holiday_name)
     greeting_line = f"\n{greeting}" if greeting else ""
-    send_alert(
+    post_bot_alert(
         f"🎌 [휴장안내] 오늘({date_str})은 '{holiday_name}'로 미국 휴장일이라 진폭 기록을 쉬어갑니다!{greeting_line}",
-        webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
+        channel=FUTURES_TRACKER_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_TRACKER_ENV_VAR,
     )
-    send_alert(
+    post_bot_alert(
         f"🎌 [휴장안내] 오늘({date_str})은 '{holiday_name}'로 미국 휴장일이니 참고 해주세요!",
-        webhook_env_var=WEBHOOK_ENV_VAR,
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
 def alert_full_holiday_tomorrow(date_str: str, holiday_name: str):
-    """완전휴장일 전날, 미장후(+하루 마감 요약) 알림 이후 - #trading-notify로 예고."""
+    """완전휴장일 전날, 미장후(+하루 마감 요약) 알림 이후 - #trading-notify로 예고.
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
     greeting = HOLIDAY_GREETINGS.get(holiday_name)
     greeting_line = f"\n{greeting}" if greeting else ""
-    send_alert(
+    post_bot_alert(
         f"🎌 [휴장안내] 내일({date_str})은 '{holiday_name}'로 미국 휴장일이라 진폭 기록이 없어요!{greeting_line}",
-        webhook_env_var=WEBHOOK_ENV_VAR,
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
 def alert_unexpected_no_trading(date_str: str, timing: str):
     """하드코딩된 완전휴장일 목록에는 없는데 7개 종목 전부 무변동(고=저)으로 감지된 경우 -
-    예상 못한 휴장/데이터 문제일 수 있어 확인 요망 알림 (#trading-notify, 데이터 기반 백업 감지)."""
-    send_alert(
+    예상 못한 휴장/데이터 문제일 수 있어 확인 요망 알림 (#trading-notify, 데이터 기반 백업 감지).
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
+    post_bot_alert(
         f"`{timing}` 시점에 7개 종목 전부 무변동(고=저)으로 감지돼서 기록을 스킵했어요.\n"
         f"휴장일 목록에 없는 날인데 이렇게 나온 거라, 예상 못한 휴장이거나 데이터 문제일 수 있어요 - 확인해주세요!",
         title=f"🚨 {date_str} 전종목 무변동 감지",
-        webhook_env_var=WEBHOOK_ENV_VAR,
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
@@ -613,12 +636,14 @@ def alert_early_close_today(date_str: str, name: str, detail: str):
     완전휴장일과 달리 진폭 기록/체크포인트는 평소처럼 정상 진행됨 (기록 로직 변경 없음) - 2026-09-01 신규.
     2026-09-01 재인님 요청: '조기종료 안내'(당일)는 볼드 유지 - title 파라미터 그대로 사용
     (send_slack_alert가 title을 자동으로 *볼드* 처리함). 이모지는 ⏰(다른 알림에서 이미 사용 중)와
-    구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지)."""
-    send_alert(
+    구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지).
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
+    post_bot_alert(
         f"오늘({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
         f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
         title="‼️ [조기종료 안내]‼️",
-        webhook_env_var=WEBHOOK_ENV_VAR,
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
@@ -627,18 +652,21 @@ def alert_early_close_tomorrow(date_str: str, name: str, detail: str):
     2026-09-01 신규. 2026-09-01 재인님 요청: '조기종료 예고'(전날)는 볼드 없이 -
     title 파라미터를 쓰면 send_slack_alert가 자동으로 *볼드* 처리하므로,
     title을 안 쓰고 첫 줄에 직접 넣어서 일반 텍스트로 보냄. 이모지는 ⏰(다른 알림에서 이미
-    사용 중)와 구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지)."""
-    send_alert(
+    사용 중)와 구분되도록 ‼️로 통일 (재인님 재요청, 예고/안내 둘 다 동일 이모지).
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
+    post_bot_alert(
         f"‼️ [조기종료 예고]‼️\n"
         f"내일({date_str})은 '{name}'로 일부 상품 조기종료가 있는 날이에요!\n{detail}\n"
         f"※ 진폭 기록은 평소처럼 정상 진행돼요 - 참고만 해주세요 🙏",
-        webhook_env_var=WEBHOOK_ENV_VAR,
+        channel=TRADING_NOTIFY_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ENV_VAR,
     )
 
 
 def alert_holiday_calendar_reminder(tier: str):
     """연말 CME 다음해 휴장일 캘린더 갱신 리마인더 - #trading-notify, 12월 초/중순/말 3회.
-    tier: 'early' | 'mid' | 'final'"""
+    tier: 'early' | 'mid' | 'final'
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
     from datetime import datetime as _dt
     next_year = _dt.now().year + 1
     if tier == "early":
@@ -653,4 +681,4 @@ def alert_holiday_calendar_reminder(tier: str):
     else:  # final
         title = f"🔧 [운영 알림-🚨최종리마인드🚨] {next_year}년 휴장일 반영 마감 체크"
         message = f"재인님, {next_year}년 휴장일 코드 반영 완료됐는지, 날짜 오류는 없는지 마지막으로 꼭 확인해주세요 🙏"
-    send_alert(message, title=title, webhook_env_var=WEBHOOK_ENV_VAR)
+    post_bot_alert(message, title=title, channel=TRADING_NOTIFY_CHANNEL_ID, fallback_webhook_env_var=WEBHOOK_ENV_VAR)

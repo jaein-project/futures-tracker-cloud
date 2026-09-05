@@ -4,6 +4,16 @@ Google Sheets 자동 기록 모듈
 - 네트워크 오류 시 3회 자동 재시도
 - K열 비고 지원 (경제발표 기록용)
 - 중복 방지 로직 포함
+
+⚠️ 2026-09-06 발견/수정: Slack 메시지 ts(예: "1757133315.123456")를 워크플로우_오류_추적 /
+반복감지_재검증 / 롤오버_체크 탭에 저장할 때 value_input_option="USER_ENTERED"를 썼더니,
+구글 시트가 이 값을 숫자로 자동 인식해서 배정밀도(15자리 유효숫자)로 반올림 저장함 - Slack
+ts는 유효숫자가 16자리라 마지막 자리가 깎여서(예: ...123456 -> ...12346) 나중에 get_all_values()로
+다시 읽어온 ts가 원본과 미세하게 달라짐. 이 어긋난 ts로 스레드 답변(reply_in_thread)을 보내면
+정상적으로 원본 메시지에 붙지 않고 엉뚱하게 처리될 수 있어서(재인님이 롤오버 더블체크 답변이
+스레드로 안 붙고 새 알림처럼 보인다고 확인해줌), 위 3개 등록 함수의 value_input_option을 모두
+"RAW"(입력값을 그대로 문자열로 저장, 숫자 자동인식 안 함)로 변경함. 다른 날짜/상태 컬럼들은
+ISO 형식 문자열(예: "2026-09-06T09:15:00+09:00")이라 애초에 숫자로 오인식되지 않아 영향 없음.
 """
 
 import gspread
@@ -242,7 +252,7 @@ def register_streak_recheck(spreadsheet, date_str, time_str, name, old_val, day_
             day_start.isoformat(), target_dt.isoformat(), "대기",
             message_ts or "", channel or "",
             checkpoint_ts or "", checkpoint_channel or "",
-        ], value_input_option="USER_ENTERED")
+        ], value_input_option="RAW")  # 2026-09-06 수정: USER_ENTERED -> RAW (메시지ts 정밀도 유실 버그, 아래 참고)
     except Exception as e:
         print(f"   ⚠️ 반복감지_재검증 등록 오류: {e}")
 
@@ -312,7 +322,8 @@ def _get_or_create_rollover_check_ws(spreadsheet):
 
 def register_rollover_check(spreadsheet, date_str, name, old_symbol, new_symbol, message_ts, channel):
     """월물 롤오버 알림이 뜬 뒤 ROLLOVER_CHECK_DELAY_MINUTES(10분) 뒤 새 월물 데이터가
-    정상적으로 들어오는지 확인하기 위한 대기열 등록 (2026-09-04 신규 - 재인님 요청)."""
+    정상적으로 들어오는지 확인하기 위한 대기열 등록 (2026-09-04 신규 - 재인님 요청).
+    2026-09-06 수정: value_input_option을 USER_ENTERED -> RAW로 변경 (아래 참고)."""
     try:
         ws = _get_or_create_rollover_check_ws(spreadsheet)
         now = datetime.now(pytz.timezone(TIMEZONE))
@@ -320,7 +331,7 @@ def register_rollover_check(spreadsheet, date_str, name, old_symbol, new_symbol,
         ws.append_row([
             now.isoformat(), check_at.isoformat(), date_str, name, old_symbol, new_symbol,
             message_ts or "", channel or "", "대기",
-        ], value_input_option="USER_ENTERED")
+        ], value_input_option="RAW")  # 2026-09-06 수정: USER_ENTERED -> RAW (메시지ts 정밀도 유실 버그)
     except Exception as e:
         print(f"   ⚠️ 롤오버_체크 등록 오류: {e}")
 
@@ -377,12 +388,13 @@ def _get_or_create_workflow_error_ws(spreadsheet):
 def register_workflow_error(spreadsheet, context, message_ts, channel):
     """워크플로우 오류 알림이 뜨면 등록 - 다음 폴링(gh_actions_poll.py)이 예외 없이 끝까지
     정상 완료되면 자동으로 '복구됐다'고 보고 원본 알림에 이모지+스레드 답변을 달아줌
-    (2026-09-04 신규 - 재인님 요청)."""
+    (2026-09-04 신규 - 재인님 요청).
+    2026-09-06 수정: value_input_option을 USER_ENTERED -> RAW로 변경 (아래 참고)."""
     try:
         ws = _get_or_create_workflow_error_ws(spreadsheet)
         now = datetime.now(pytz.timezone(TIMEZONE))
         ws.append_row([now.isoformat(), context, message_ts or "", channel or "", "대기"],
-                       value_input_option="USER_ENTERED")
+                       value_input_option="RAW")  # 2026-09-06 수정: USER_ENTERED -> RAW (메시지ts 정밀도 유실 버그)
     except Exception as e:
         print(f"   ⚠️ 워크플로우_오류_추적 등록 오류: {e}")
 
