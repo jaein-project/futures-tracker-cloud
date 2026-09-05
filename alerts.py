@@ -361,6 +361,18 @@ WORKFLOW_RECOVERED_REPLIES = [
     "다시 확인해보니 정상 작동 중이에요 - 복구 완료!",
 ]
 
+# 워크플로우 오류 재확인 결과 "아직도 오류" - 2026-09-05 신규 (재인님 요청).
+# 원래는 다음 폴링이 "성공"할 때만 체크(🤖)를 달아줬는데, 그러면 다음 폴링도 "실패"하는
+# 경우엔 원본 알림이 계속 무응답 상태로 남아서 재인님이 "이거 확인된 거야, 아직 안 된 거야?"
+# 헷갈릴 수 있음. 그래서 다음 폴링 결과가 성공이든 실패든 상관없이 "한 번은 반드시" 원본
+# 알림에 이모지+멘트로 답을 달아주도록 변경 - 이모지는 복구 때와 동일하게 🤖로 통일하고
+# (재인님 요청: "이모지는 동일하고"), 멘트만 결과에 따라 다르게 감. 이러면 재인님이 슬랙을
+# 계속 보고 있지 않아도, 나중에 열어봤을 때 원본 메시지 하나만 보고 바로 상태를 알 수 있음.
+WORKFLOW_STILL_FAILING_REPLIES = [
+    "다음 폴링에서도 같은 문제가 확인됐어요 - 아직 복구가 안 된 상태예요.",
+    "다시 확인해봤는데 아직도 오류가 계속되고 있어요 - 복구 전이에요.",
+]
+
 
 def _rollover_abnormal_reply() -> str:
     """롤오버 후 10분이 지나도 새 월물 데이터가 확인 안 될 때 - 재인님 태그 + HTS 확인 요청"""
@@ -412,6 +424,18 @@ def reply_workflow_recovered(channel: str, ts: str, variant_idx: int):
     🤖 반응 + 스레드 답변(번갈아가며)"""
     add_reaction(channel, ts, RECHECK_EMOJI)
     reply_in_thread(channel, ts, WORKFLOW_RECOVERED_REPLIES[variant_idx % len(WORKFLOW_RECOVERED_REPLIES)])
+
+
+def reply_workflow_still_failing(channel: str, ts: str, variant_idx: int):
+    """다음 폴링에서도 워크플로우가 또 실패해서, "아직 복구 안 됨"으로 재확인됐을 때 -
+    🤖 반응(복구 때와 동일한 이모지) + 스레드 답변(번갈아가며). 2026-09-05 신규.
+    이 새 실패 건 자체는 alert_workflow_exception으로 별도의 새 ❌ 알림이 또 올라가고,
+    그 새 알림이 다음 재확인 대상으로 다시 등록됨 (register_workflow_error)."""
+    add_reaction(channel, ts, RECHECK_EMOJI)
+    reply_in_thread(
+        channel, ts,
+        WORKFLOW_STILL_FAILING_REPLIES[variant_idx % len(WORKFLOW_STILL_FAILING_REPLIES)],
+    )
 
 
 # 체크포인트 내부 키(스케줄 계산용) → 실제 알림 문구에 쓰는 표시명

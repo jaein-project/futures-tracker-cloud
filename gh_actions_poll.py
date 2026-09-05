@@ -833,11 +833,17 @@ def main():
     return spreadsheet
 
 if __name__ == "__main__":
+    # 2026-09-05 수정: 기존엔 "다음 폴링이 성공했을 때만" 이전 오류들을 '복구됨'으로 체크했는데,
+    # 그러면 다음 폴링도 또 실패하는 경우 원본 알림이 계속 무응답 상태로 남아서 재인님이
+    # "이거 확인된 거야, 아직 안 된 거야?" 헷갈릴 수 있음(노트북을 계속 보고 있는 게 아니라서
+    # 실시간으로 못 따라간다고 하심). 그래서 이번 폴링 결과가 성공이든 실패든 상관없이,
+    # 대기 중이던 이전 오류가 있으면 "한 번은 반드시" 원본 알림에 🤖 + 결과별 멘트를 달아주도록
+    # 변경 - 성공했으면 "복구됐어요", 이번에도 실패했으면 "아직 복구 안 됐어요"로 답을 닮.
+    # 이러면 슬랙을 계속 보고 있지 않아도 나중에 열었을 때 원본 메시지 하나만 보고 바로
+    # 최신 상태를 알 수 있음.
     try:
         _spreadsheet = main()
-        # 2026-09-04 추가: 이번 실행이 예외 없이 끝까지 정상 완료됐다는 뜻이므로,
-        # 아직 '대기' 상태인 워크플로우 오류가 있으면 전부 '복구됐다'고 보고
-        # 원본 알림에 👀 반응 + 스레드 답변을 달아줌 (재인님 요청 - 봇 더블체크 기능)
+        # 이번 실행이 예외 없이 끝까지 정상 완료됨 -> 대기 중이던 오류 전부 '복구됨' 처리
         from google_sheet import get_pending_workflow_errors, mark_workflow_error_resolved
         from alerts import reply_workflow_recovered
         for _item in get_pending_workflow_errors(_spreadsheet):
@@ -845,12 +851,29 @@ if __name__ == "__main__":
                 reply_workflow_recovered(_item["channel"], _item["message_ts"], _item["row_idx"])
             mark_workflow_error_resolved(_spreadsheet, _item["row_idx"])
     except Exception as e:
-        from alerts import alert_workflow_exception
-        from google_sheet import register_workflow_error
+        from alerts import alert_workflow_exception, reply_workflow_still_failing
+        from google_sheet import register_workflow_error, get_pending_workflow_errors, mark_workflow_error_resolved
+
+        # 이번 실행도 실패 - 새 오류 알림(별개 메시지)을 슬랙에 올림. 이건 구글 API와 무관하게
+        # 항상 시도됨(웹훅 폴백 포함)이라 구글 쪽이 완전히 먹통이어도 이 알림 자체는 대부분 뜸.
         _result = alert_workflow_exception("gh_actions_poll.py", e)
+
+        # 시트 연결은 한 번만 시도해서 재사용 - "이전 오류 재확인"과 "이번 오류 등록"을 같은
+        # 연결로 처리함(따로따로 두 번 시도하면 구글 API 장애 중엔 실패 확률만 두 배로 늘어남).
+        # 이 연결 자체가 실패하면(예: 503으로 완전히 먹통) 재확인/등록 둘 다 조용히 스킵되고
+        # 로그에만 남음 - 그 경우 원본 알림들은 무응답으로 남지만, 이건 "복구 안 됐는데 됐다고
+        # 잘못 알려주는" 것보다 안전한 방향의 실패라 의도된 동작임.
         try:
             _spreadsheet = get_client().open_by_key(SPREADSHEET_ID)
+
+            # 1) 대기 중이던 이전 오류가 있으면 "이번에도 실패 확인됨"으로 답을 닮
+            for _item in get_pending_workflow_errors(_spreadsheet):
+                if _item["message_ts"] and _item["channel"]:
+                    reply_workflow_still_failing(_item["channel"], _item["message_ts"], _item["row_idx"])
+                mark_workflow_error_resolved(_spreadsheet, _item["row_idx"], status="완료-재확인(오류지속)")
+
+            # 2) 이번 새 오류를 다음 재확인 대상으로 등록
             register_workflow_error(_spreadsheet, "gh_actions_poll.py", _result.get("ts"), _result.get("channel"))
         except Exception as _reg_e:
-            print(f"   ⚠️ 워크플로우 오류 등록 실패: {_reg_e}")
+            print(f"   ⚠️ 워크플로우 오류 등록/재확인 실패: {_reg_e}")
         raise
