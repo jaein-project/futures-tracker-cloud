@@ -34,12 +34,16 @@ jobs:
 
       - name: "백업 실행 (드라이브 복사 + xlsx 스냅샷 생성)"
         env:
+          # 2026-09-05 수정: 백업 실패 알림 전용 채널(#system-notify)로 보내려면 그 채널에
+          # 초대된 전용 봇(systembot)의 토큰이 필요해서 SLACK_BOT_TOKEN → SLACK_BOT_TOKEN_SYSTEM
+          # 으로 교체 (alerts.py의 alert_backup_error가 이 토큰으로 systembot을 통해 전송함).
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN_SYSTEM: ${{ secrets.SLACK_BOT_TOKEN_SYSTEM }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python backup_sheet.py
 
       - name: "스냅샷 커밋 & 푸시"
+        id: commit_push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -50,3 +54,15 @@ jobs:
           else
             echo "변경 사항 없음 (오늘 스냅샷이 이미 있음)"
           fi
+
+      - name: "GitHub 저장 실패 알림"
+        # 2026-09-05 신설: 위 "백업 실행" 스텝(구글 드라이브 백업 + xlsx 생성)은 이미 성공했는데
+        # 이 커밋/푸시 스텝만 실패한 경우 전용으로, 심각도가 낮다는 걸 알려주는 별도 알림을 보냄
+        # (steps.commit_push.conclusion == 'failure'로 정확히 "이 스텝"의 실패만 감지 - job
+        # 전체의 failure()를 쓰면 다른 스텝 실패에도 오탐할 수 있어서 피함).
+        if: steps.commit_push.conclusion == 'failure'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN_SYSTEM: ${{ secrets.SLACK_BOT_TOKEN_SYSTEM }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python -c "from alerts import alert_backup_github_push_failed; alert_backup_github_push_failed()"
