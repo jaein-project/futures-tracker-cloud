@@ -53,8 +53,10 @@ GitHub Actions 워크플로우 자체는 "성공"으로 끝나더라도, 특정 
 post_bot_alert()(봇 토큰 방식)로 통일함. 이제 이 두 채널에 오는 알림은 전부 같은 봇
 정체성(이름/아이콘)으로 표시되고, 웹훅은 봇 토큰 호출이 실패했을 때만 조용히 쓰이는
 비상 백업으로만 남음 - 평소엔 안 보임.
-#economic-presentation은 지금까지 채널ID를 코드에 등록해둔 적이 없어서(웹훅 URL만 써왔음)
-이번엔 그대로 웹훅 방식으로 남겨둠 - 통일하려면 그 채널 ID와 봇 초대가 추가로 필요함.
+#economic-presentation도 재인님이 채널 ID(C0BTBBMLPH6)를 확인해주고 해당 채널에 봇을 직접
+초대해준 덕분에(2026-09-06), 같은 방식으로 통일 완료 - 이제 4개 채널(trading-notify,
+futures-tracker, economic-presentation, system-notify) 전부 봇 토큰이 기본 발송 경로이고,
+웹훅은 전부 실패시에만 조용히 쓰이는 비상 백업으로만 남음.
 """
 
 import os
@@ -69,6 +71,9 @@ BOT_TOKEN_ENV_VAR = "SLACK_BOT_TOKEN"
 TRADING_NOTIFY_CHANNEL_ID = "C0BS0HENLJ1"  # #trading-notify 채널 ID - 반복감지/롤오버/워크플로우 오류 더블체크 전용
 FUTURES_TRACKER_CHANNEL_ID = "C0BTBE5EJM6"  # #futures-tracker 채널 ID - 2026-09-04 추가:
                                              # 반복감지 재검증 보정 결과를 체크포인트 메시지 스레드에 달기 위해 필요
+ECONOMIC_PRESENTATION_CHANNEL_ID = "C0BTBBMLPH6"  # #economic-presentation 채널 ID - 2026-09-06 추가:
+                                                    # 봇 통일(재인님이 이 채널에 봇 초대 완료)로 이 채널도
+                                                    # 웹훅 대신 post_bot_alert로 보낼 수 있게 됨
 JAEIN_SLACK_USER_ID = "U0BRP2C3PMM"  # 재인님 개인 Slack 계정 - 롤오버 데이터 이상 시 태그용
 
 BOT_TOKEN_SYSTEM_ENV_VAR = "SLACK_BOT_TOKEN_SYSTEM"  # systembot 전용 토큰 (2026-09-05 신규)
@@ -533,37 +538,44 @@ def alert_economic_recorded(date_str: str, note: str, names: list = None, detail
 def alert_reminder_tier(date_str: str, tier_label: str, names: list, event_time: str):
     """중요 경제발표 임박 예고 (10분 전 / 5분 전 / 1분 전) - #economic-presentation 전용.
     시트에는 아무것도 기록하지 않는 순수 알림 (2026-08-26 신규).
-    같은 시각에 겹치는 지표는 names에 전부 담겨서 한 번에 나감."""
+    같은 시각에 겹치는 지표는 names에 전부 담겨서 한 번에 나감.
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송 (재인님이 이 채널에
+    봇 초대 완료 - 아래 '2026-09-06 봇 통일' 참고)."""
     lines = "\n".join(f"{event_time}\t{name}" for name in (names or []))
     message = f"\n{lines}"
-    send_alert(
+    post_bot_alert(
         message,
         title=f"🚨{date_str} 경제 발표 `{tier_label}` 예고🚨",
-        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+        channel=ECONOMIC_PRESENTATION_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
     )
 
 
 def alert_daily_digest(date_str: str, events: list):
     """매일 낮 3시, 오늘 예정된 경제발표 전체(중요도 필터 없음) 목록 안내 - #economic-presentation 전용.
     시트에는 기록하지 않는 순수 안내 알림 (2026-08-26 신규).
-    events: [{"time": "21:30", "name": "..."}, ...] (시간순 정렬된 상태로 전달받음)"""
+    events: [{"time": "21:30", "name": "..."}, ...] (시간순 정렬된 상태로 전달받음)
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
     lines = "\n".join(f"{e['time']}\t{e['name']}" for e in events)
-    send_alert(
+    post_bot_alert(
         lines,
         title=f"🔥 {date_str} 오늘의 경제 발표🔥",
-        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+        channel=ECONOMIC_PRESENTATION_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
     )
 
 
 def alert_pre_post_comparison(date_str: str, event_time: str, name_str: str, comparison: str):
     """경제발표 20분 후, 발표 전(-5분) 대비 진폭이 얼마나 움직였는지 한눈에 보는 비교 알림
     - #economic-presentation 전용. 시트에는 기록하지 않는 순수 알림 (2026-08-26 신규).
-    comparison: '{종목} {전값} > {후값} (▲증감)' 형태 줄들을 이미 만들어서 전달받음"""
+    comparison: '{종목} {전값} > {후값} (▲증감)' 형태 줄들을 이미 만들어서 전달받음
+    2026-09-06 수정: 웹훅 대신 봇 토큰(post_bot_alert)으로 통일 발송."""
     message = f"[{event_time} {name_str} 발표 기준]\n{comparison}"
-    send_alert(
+    post_bot_alert(
         message,
         title=f"📊 {date_str} 경제 발표 전/후 진폭 비교",
-        webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
+        channel=ECONOMIC_PRESENTATION_CHANNEL_ID,
+        fallback_webhook_env_var=WEBHOOK_ECONOMIC_ENV_VAR,
     )
 
 
