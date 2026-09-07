@@ -144,7 +144,18 @@ def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: d
         print(f"   ❌ [{symbol}] 조회 오류: {e}")
         return None
 
-def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str: str, note: str):
+def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str: str, note: str,
+              spreadsheet=None):
+    """spreadsheet: 2026-09-07 추가 - 넘겨주면 종목별 '데이터 누락' 알림을 하루에 한 번으로
+    제한함 (넘기지 않으면 예전처럼 매번 보냄 - 하위호환용).
+
+    2026-09-07 발견 (재인님 실제 피해 사례): 이 함수는 process_checkpoints()에서 5분마다
+    "아직 기록 안 된 체크포인트"를 재시도하는 루프 안에서 호출되는데, 조기종료일(노동절 등)이나
+    Yahoo Finance 쪽 이슈로 특정 종목의 데이터가 몇 시간째 안 들어오는 상황이면, 그 몇 시간 내내
+    5분마다 같은 "데이터 누락" 알림이 종목 수만큼 반복 발송되는 문제가 있었음(알림 폭탄).
+    그래서 알림기록(is_reminder_sent/mark_reminder_sent) 탭을 재사용해서 같은 날 같은 종목에
+    대해서는 최초 1번만 알리고, 그 이후 재시도에서는 조용히 스킵하도록 함. 데이터가 실제로
+    들어오기 시작하면(hl이 채워지면) 이 분기 자체를 안 타니까 알림도 자연스럽게 멈춤."""
     row = [date_str, time_str]
     any_data = False
     for name in SYMBOL_ORDER:
@@ -159,7 +170,16 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
             row.append("")
             print(f"   ⚠️ [{name}] 데이터 없음")
             from alerts import alert_symbol_missing
-            alert_symbol_missing(name, symbol)
+            if spreadsheet is not None:
+                from google_sheet import is_reminder_sent, mark_reminder_sent
+                label = f"symbol_missing_{name}"
+                if is_reminder_sent(spreadsheet, date_str, label):
+                    print(f"   ℹ️ [{name}] 오늘 이미 데이터 누락 알림을 보냈어서 재알림 생략 (알림 폭탄 방지)")
+                else:
+                    alert_symbol_missing(name, symbol)
+                    mark_reminder_sent(spreadsheet, date_str, label)
+            else:
+                alert_symbol_missing(name, symbol)
     row.append(note)
     return row, any_data
 
@@ -368,7 +388,7 @@ def process_checkpoints(ws, now: datetime):
                 continue
             print(f"🚀 [{timing}] {date_str} 누락분 발견 - {day_start.strftime('%Y-%m-%d %H:%M')} ~ {target_dt.strftime('%Y-%m-%d %H:%M')} KST 역산 중...")
             time_str = time_str_from(target_dt)
-            row, any_data = build_row(day_start, target_dt, date_str, time_str, "")
+            row, any_data = build_row(day_start, target_dt, date_str, time_str, "", spreadsheet=ws.spreadsheet)
 
             # 2026-08-26 추가: 하드코딩 목록에 없는 날인데 7개 종목 전부 무변동(고=저)이면
             # 예상 못한 휴장/이슈일 가능성이 커서 기록을 스킵하고 확인 알림만 보냄 (데이터 기반 백업 감지)
@@ -574,7 +594,7 @@ def process_economic(ws, now: datetime):
             print(f"📌 경제발표 기록 시도: {date_str} {note}")
             day_start = trading_day_start(target_dt)
             time_str = time_str_from(target_dt)
-            row, any_data = build_row(day_start, target_dt, date_str, time_str, note)
+            row, any_data = build_row(day_start, target_dt, date_str, time_str, note, spreadsheet=ws.spreadsheet)
             if any_data:
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ 경제발표 기록 완료: {date_str} {note}")
@@ -654,7 +674,8 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
         print(f"   ⏭️ [{g['label_pre']}] '전' 기록이 아직 없어서 20분 후 비교 스킵")
         return
     day_start = trading_day_start(compare_dt)
-    after_row, any_data = build_row(day_start, compare_dt, date_str, time_str_from(compare_dt), "")
+    after_row, any_data = build_row(day_start, compare_dt, date_str, time_str_from(compare_dt), "",
+                                     spreadsheet=spreadsheet)
     if not any_data:
         print(f"   ❌ 20분 후 비교용 데이터 없음")
         return
