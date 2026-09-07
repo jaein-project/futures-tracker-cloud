@@ -24,6 +24,18 @@ WEEKDAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
 QUARTER_TO_MONTH = {"1분기": "3월", "2분기": "6월", "3분기": "9월", "4분기": "12월"}
 
+# 2026-09-07 추가 (재인님 리포트 - 9/7 유로존 GDP/고용 발표가 시트에 안 들어간 문제):
+# 기존엔 "국가"가 "미국"인 행만 가져오고 나머지는 전부 조용히 버렸음. 하나HTS 파일은 유로존을
+# "유로 지역"으로, 영웅문 파일은 "유로존"으로 다르게 표기해서 두 값 다 허용 목록에 넣고,
+# 시트에는 항상 "유로존"으로 통일해서 씀 (기존 수기입력 데이터도 "유로존" 표기라 일관성 유지).
+COUNTRY_ALLOWLIST = {"미국", "유로존", "유로 지역"}
+COUNTRY_DISPLAY = {"유로 지역": "유로존"}
+
+
+def _normalize_country(raw: str) -> str:
+    raw = (raw or "").strip()
+    return COUNTRY_DISPLAY.get(raw, raw)
+
 
 # ── 하나HTS 포맷 (진짜 xlsx, 컬럼: 날짜(YYYY/MM/DD)/시간/국가/표시/발표월(날짜형)) ──
 
@@ -44,6 +56,7 @@ def _parse_row_hana(row):
         time_str = str(row.get("시간", "")).strip()
         name = str(row.get("표시", "")).strip()
         pub_month = str(row.get("발표월", "")).strip()
+        country = _normalize_country(str(row.get("국가", "")))
         if not date_str or not name:
             return None
         date_obj = datetime.strptime(date_str[:10], "%Y/%m/%d")
@@ -53,7 +66,7 @@ def _parse_row_hana(row):
         month_prefix = _get_month_prefix_hana(pub_month)
         full_name = f"{month_prefix}{name}"
         return {"date": date_formatted, "weekday": weekday_ko, "time": time_formatted,
-                "country": "미국", "name": full_name}
+                "country": country, "name": full_name}
     except Exception:
         return None
 
@@ -62,10 +75,10 @@ def _load_events_hana(filepath):
     """하나HTS 포맷: 진짜 엑셀 바이너리. 실패하면 예외를 던져서 영웅문 포맷 시도로 넘어감."""
     df = pd.read_excel(filepath, dtype=str).fillna("")
     print(f"   (하나HTS 형식으로 인식) 총 {len(df)}행 로드")
-    df_us = df[df["국가"].str.contains("미국", na=False)]
-    print(f"   미국 필터 후: {len(df_us)}행")
+    df_filtered = df[df["국가"].isin(COUNTRY_ALLOWLIST)]
+    print(f"   국가 필터 후(미국+유로존): {len(df_filtered)}행")
     events = []
-    for _, row in df_us.iterrows():
+    for _, row in df_filtered.iterrows():
         parsed = _parse_row_hana(row)
         if parsed:
             events.append(parsed)
@@ -95,7 +108,7 @@ def _infer_year_kiwoom(month: int) -> int:
     return year
 
 
-def _parse_row_kiwoom(date_str, time_str, pub_month, name):
+def _parse_row_kiwoom(date_str, time_str, pub_month, name, country):
     try:
         if not date_str or not name:
             return None
@@ -112,7 +125,7 @@ def _parse_row_kiwoom(date_str, time_str, pub_month, name):
         month_prefix = _normalize_month_prefix_kiwoom(pub_month)
         full_name = f"{month_prefix}{name.strip()}"
         return {"date": date_formatted, "weekday": weekday_ko, "time": time_formatted,
-                "country": "미국", "name": full_name}
+                "country": _normalize_country(country), "name": full_name}
     except Exception:
         return None
 
@@ -131,7 +144,7 @@ def _load_events_kiwoom(filepath):
     print(f"   (영웅문 형식으로 인식) 총 {len(rows)}행 로드")
 
     events = []
-    us_count = 0
+    kept_count = 0
     for tr in rows:
         tds = tr.find_all("td")
         if len(tds) < 12:
@@ -141,13 +154,15 @@ def _load_events_kiwoom(filepath):
         country = tds[4].get_text(strip=True)  # 국기 아이콘(tds[3]) 다음 칸에 실제 국가명
         pub_month = tds[5].get_text(strip=True)
         name = tds[6].get_text(strip=True)
-        if country != "미국":
+        # 2026-09-07 수정: "미국"만 남기고 나머지(유로존 포함)를 전부 버리던 필터를
+        # COUNTRY_ALLOWLIST 기준으로 완화 (재인님 리포트 - 9/7 유로존 GDP/고용 발표 누락 건)
+        if country not in COUNTRY_ALLOWLIST:
             continue
-        us_count += 1
-        parsed = _parse_row_kiwoom(date_str, time_str, pub_month, name)
+        kept_count += 1
+        parsed = _parse_row_kiwoom(date_str, time_str, pub_month, name, country)
         if parsed:
             events.append(parsed)
-    print(f"   미국 필터 후: {us_count}행")
+    print(f"   국가 필터 후(미국+유로존): {kept_count}행")
     return events
 
 
