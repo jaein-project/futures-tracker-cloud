@@ -105,12 +105,16 @@ def trading_day_start(dt_kst: datetime) -> datetime:
         boundary -= timedelta(days=1)
     return boundary
 
-def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: datetime, multiplier=None):
-    """day_start_kst 부터 target_dt_kst 까지의 분봉 누적 고가/저가"""
+FALLBACK_INTERVALS = ["5m", "15m", "60m"]  # 2026-09-07 추가 - 아래 설명 참고
+
+def _fetch_high_low_for_interval(symbol: str, day_start_kst: datetime, target_dt_kst: datetime,
+                                  interval: str, multiplier=None):
+    """지정한 interval 하나로만 day_start_kst~target_dt_kst 구간의 고가/저가를 조회.
+    (기존 get_intraday_high_low의 원래 본문을 그대로 옮긴 것 - 동작 변경 없음)"""
     period1 = int(day_start_kst.astimezone(pytz.UTC).timestamp())
     period2 = int(target_dt_kst.astimezone(pytz.UTC).timestamp()) + 60
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {"period1": period1, "period2": period2, "interval": "5m"}
+    params = {"period1": period1, "period2": period2, "interval": interval}
     try:
         res = requests.get(url, headers=HEADERS, params=params, timeout=10)
         data = res.json()
@@ -141,8 +145,28 @@ def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: d
             low  = round(float(low),  5)
         return {"high": high, "low": low}
     except Exception as e:
-        print(f"   ❌ [{symbol}] 조회 오류: {e}")
+        print(f"   ❌ [{symbol}] 조회 오류({interval}): {e}")
         return None
+
+
+def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: datetime, multiplier=None):
+    """day_start_kst 부터 target_dt_kst 까지의 분봉 누적 고가/저가.
+
+    2026-09-07 수정 (재인님 실제 사례 - 노동절 당일 전종목 데이터 누락): Yahoo Finance가
+    미국 시장 휴장일엔 실제로는 CME 선물이 계속 거래되고 있어도(영웅문 HTS로 확인함,
+    TradingView도 정상적으로 나옴) 5분봉 데이터 자체를 그날 하루 안 채워주는 경우가 있음.
+    반면 더 굵은 간격(15분/1시간봉)은 채워져 있는 경우가 있어서, 5분봉이 완전히 비어있을
+    때만 순서대로 15분→1시간봉으로 재시도하도록 변경. 정밀도는 살짝 떨어지지만(체크포인트
+    구간 경계에 걸친 봉 하나가 실제보다 조금 더 이르거나 늦은 시각의 값을 포함할 수 있음),
+    "아예 기록을 못 하고 알림만 반복되는 것"보다는 훨씬 나음. 5분봉이 정상적으로 있는
+    평상시엔 이 함수는 예전과 완전히 동일하게 동작함(1차 시도에서 바로 반환)."""
+    for interval in FALLBACK_INTERVALS:
+        hl = _fetch_high_low_for_interval(symbol, day_start_kst, target_dt_kst, interval, multiplier)
+        if hl is not None:
+            if interval != FALLBACK_INTERVALS[0]:
+                print(f"   ℹ️ [{symbol}] {FALLBACK_INTERVALS[0]}봉엔 데이터가 없어서 {interval}봉으로 대체 조회 성공")
+            return hl
+    return None
 
 def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str: str, note: str,
               spreadsheet=None):
