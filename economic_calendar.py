@@ -84,11 +84,15 @@ def is_amplitude_target(name: str, weekday: str) -> bool:
 
 
 def fetch_today_events_all():
-    """경제발표 시트에서 '오늘 거래일'의 '미국' 지표 전체를 중요도 필터 없이 읽기
+    """경제발표 시트에서 '오늘 거래일'의 지표 전체를 중요도 필터 없이 읽기
     (매일 낮 3시 '오늘의 경제 발표 전체' 다이제스트용 - is_amplitude_target 필터를 타지 않음)
     2026-08-27: 달력 날짜(자정 기준)가 아니라 거래일(07:00/08:00 KST 기준)로 판단하도록 변경 -
     새벽에 발표되는 지표가 엉뚱한 '다음 날짜'로 잡혀서 다이제스트에 잘못 묶이던 문제를
-    체크포인트와 동일한 기준으로 통일해서 해결."""
+    체크포인트와 동일한 기준으로 통일해서 해결.
+    2026-09-07 수정: 원래 docstring/의도대로 "오늘 예정된 경제발표 전체"를 보내야 하는데
+    "미국"만 하드코딩되어 필터링되고 있었음 (유로존 추가 이전 코드가 그대로 남아있던 것).
+    9/7 유로존만 발표 있는 날 낮 3시 다이제스트가 통째로 스킵된 걸 재인님이 발견 →
+    미국/유로존 둘 다 포함하도록 수정 (COUNTRY_ALLOWLIST와 동일한 대상국)."""
     from google_sheet import get_client
 
     now = datetime.now(KST)
@@ -112,12 +116,12 @@ def fetch_today_events_all():
 
             if _row_trading_day(row_date, row_time) != current_trading_day:
                 continue
-            if "미국" not in row_country:
+            if row_country not in ("미국", "유로존"):
                 continue
             if not row_name:
                 continue
 
-            events.append({"date": row_date, "time": row_time, "name": row_name})
+            events.append({"date": row_date, "time": row_time, "name": row_name, "country": row_country})
 
         return events
 
