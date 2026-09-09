@@ -110,18 +110,27 @@ FALLBACK_INTERVALS = ["5m", "15m", "60m"]  # 2026-09-07 추가 - 아래 설명 �
 def _fetch_high_low_for_interval(symbol: str, day_start_kst: datetime, target_dt_kst: datetime,
                                   interval: str, multiplier=None):
     """지정한 interval 하나로만 day_start_kst~target_dt_kst 구간의 고가/저가를 조회.
-    (기존 get_intraday_high_low의 원래 본문을 그대로 옮긴 것 - 동작 변경 없음)"""
+    반환값: (hl_dict 또는 None, error_detail 또는 None)
+    2026-09-08 수정: 기존엔 실패 이유(HTTP 상태코드/예외 종류)를 print로만 남기고 그냥
+    None만 반환해서, Slack 알림에는 "Yahoo Finance 쪽 문제일 수 있어요"라는 뭉뚱그린
+    문구만 나갔음. 2026-09-08 09:00 KST에 7종목이 전부 동시에 실패한 사고를 조사할 때
+    실제 원인(레이트리밋/타임아웃/기타)을 알 방법이 없었어서, 다음에 또 이런 일이 생기면
+    바로 원인을 알 수 있도록 실패 사유를 함께 반환하도록 변경 (동작 자체는 그대로 유지)."""
     period1 = int(day_start_kst.astimezone(pytz.UTC).timestamp())
     period2 = int(target_dt_kst.astimezone(pytz.UTC).timestamp()) + 60
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"period1": period1, "period2": period2, "interval": interval}
     try:
         res = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        if res.status_code != 200:
+            error_detail = f"HTTP {res.status_code}"
+            print(f"   ❌ [{symbol}] 조회 오류({interval}): {error_detail}")
+            return None, error_detail
         data = res.json()
         result = data["chart"]["result"][0]
         timestamps = result.get("timestamp")
         if not timestamps:
-            return None  # 휴장 등으로 데이터가 전혀 없는 구간
+            return None, None  # 휴장 등으로 데이터가 전혀 없는 구간 - 오류 아님
         quote = result["indicators"]["quote"][0]
         highs, lows = [], []
         for i, ts in enumerate(timestamps):
@@ -135,7 +144,7 @@ def _fetch_high_low_for_interval(symbol: str, day_start_kst: datetime, target_dt
                 if l is not None:
                     lows.append(l)
         if not highs or not lows:
-            return None
+            return None, None  # 구간 안에 봉은 있지만 값이 비어있음 - 오류 아님
         high, low = max(highs), min(lows)
         if multiplier:
             high = round(float(high) * multiplier, 1)
@@ -143,14 +152,17 @@ def _fetch_high_low_for_interval(symbol: str, day_start_kst: datetime, target_dt
         else:
             high = round(float(high), 5)
             low  = round(float(low),  5)
-        return {"high": high, "low": low}
+        return {"high": high, "low": low}, None
     except Exception as e:
-        print(f"   ❌ [{symbol}] 조회 오류({interval}): {e}")
-        return None
+        error_detail = f"{type(e).__name__}: {e}"
+        print(f"   ❌ [{symbol}] 조회 오류({interval}): {error_detail}")
+        return None, error_detail
 
 
 def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: datetime, multiplier=None):
     """day_start_kst 부터 target_dt_kst 까지의 분봉 누적 고가/저가.
+    반환값: (hl_dict 또는 None, error_detail 또는 None) - 2026-09-08부터 error_detail 추가
+    (아래 호출부 build_row()에서 Slack 알림에 실패 사유를 함께 실어 보내기 위함).
 
     2026-09-07 수정 (재인님 실제 사례 - 노동절 당일 전종목 데이터 누락): Yahoo Finance가
     미국 시장 휴장일엔 실제로는 CME 선물이 계속 거래되고 있어도(영웅문 HTS로 확인함,
@@ -160,13 +172,16 @@ def get_intraday_high_low(symbol: str, day_start_kst: datetime, target_dt_kst: d
     구간 경계에 걸친 봉 하나가 실제보다 조금 더 이르거나 늦은 시각의 값을 포함할 수 있음),
     "아예 기록을 못 하고 알림만 반복되는 것"보다는 훨씬 나음. 5분봉이 정상적으로 있는
     평상시엔 이 함수는 예전과 완전히 동일하게 동작함(1차 시도에서 바로 반환)."""
+    last_error = None
     for interval in FALLBACK_INTERVALS:
-        hl = _fetch_high_low_for_interval(symbol, day_start_kst, target_dt_kst, interval, multiplier)
+        hl, error_detail = _fetch_high_low_for_interval(symbol, day_start_kst, target_dt_kst, interval, multiplier)
+        if error_detail:
+            last_error = error_detail
         if hl is not None:
             if interval != FALLBACK_INTERVALS[0]:
                 print(f"   ℹ️ [{symbol}] {FALLBACK_INTERVALS[0]}봉엔 데이터가 없어서 {interval}봉으로 대체 조회 성공")
-            return hl
-    return None
+            return hl, None
+    return None, last_error
 
 def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str: str, note: str,
               spreadsheet=None):
@@ -184,7 +199,7 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
     any_data = False
     for name in SYMBOL_ORDER:
         symbol, multiplier = SYMBOLS.get(name, (None, None))
-        hl = get_intraday_high_low(symbol, day_start, target_dt, multiplier) if symbol else None
+        hl, error_detail = get_intraday_high_low(symbol, day_start, target_dt, multiplier) if symbol else (None, None)
         if hl:
             ticks = calc_ticks(name, hl["high"], hl["low"])
             row.append(ticks)
@@ -200,10 +215,10 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
                 if is_reminder_sent(spreadsheet, date_str, label):
                     print(f"   ℹ️ [{name}] 오늘 이미 데이터 누락 알림을 보냈어서 재알림 생략 (알림 폭탄 방지)")
                 else:
-                    alert_symbol_missing(name, symbol)
+                    alert_symbol_missing(name, symbol, error_detail=error_detail)
                     mark_reminder_sent(spreadsheet, date_str, label)
             else:
-                alert_symbol_missing(name, symbol)
+                alert_symbol_missing(name, symbol, error_detail=error_detail)
     row.append(note)
     return row, any_data
 
@@ -807,7 +822,7 @@ def process_rollover_checks(ws, now: datetime):
             mark_rollover_check_done(spreadsheet, item["row_idx"], "완료-조회실패")
             continue
         day_start = trading_day_start(now)
-        hl = get_intraday_high_low(symbol, day_start, now, multiplier)
+        hl, _error_detail = get_intraday_high_low(symbol, day_start, now, multiplier)
         data_ok = hl is not None
         if item["message_ts"] and item["channel"]:
             reply_rollover_check(item["channel"], item["message_ts"], data_ok)
@@ -833,7 +848,7 @@ def process_streak_rechecks(ws):
         if not symbol:
             mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-조회실패")
             continue
-        hl = get_intraday_high_low(symbol, item["day_start"], item["target_dt"], multiplier)
+        hl, _error_detail = get_intraday_high_low(symbol, item["day_start"], item["target_dt"], multiplier)
         if not hl:
             print(f"   ⚠️ [{name}] 재검증 조회 실패 - {item['date_str']} {item['time_str']}")
             mark_streak_recheck_done(spreadsheet, item["row_idx"], "완료-조회실패")

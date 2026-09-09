@@ -207,13 +207,24 @@ def reply_in_thread(channel: str, ts: str, message: str) -> bool:
     return bool(result.get("ok"))
 
 
-def alert_symbol_missing(name: str, symbol: str):
+def alert_symbol_missing(name: str, symbol: str, error_detail: str = None):
     """특정 종목 데이터가 비어서(None) 왔을 때
     2026-09-06 수정: #trading-notify에 웹훅 대신 봇 토큰(post_bot_alert)으로 보내도록 통일
-    (아래 '2026-09-06 봇 통일' 안내 참고)."""
+    (아래 '2026-09-06 봇 통일' 안내 참고).
+    2026-09-08 추가: error_detail - gh_actions_poll.py가 실제로 겪은 실패 사유(HTTP 상태코드,
+    타임아웃, 예외 종류 등)를 넘겨받으면 메시지에 그대로 붙여줌. 2026-09-08 09:00 KST에
+    7종목이 전부 동시에 실패한 사고를 조사할 때, 기존엔 "Yahoo Finance 쪽 문제일 수 있어요"
+    라는 뭉뚱그린 문구만 있어서 진짜 원인(레이트리밋인지/타임아웃인지 등)을 알 방법이
+    없었음 - 다음에 또 발생하면 이 메시지만 보고도 바로 원인을 알 수 있게 하기 위함.
+    error_detail이 없으면(예: 데이터가 아예 비어있는 정상적인 휴장 등) 기존 문구 그대로 나감."""
+    # 2026-09-08 추가: 예외 메시지가 너무 길면(예: 프록시/연결 오류의 긴 원본 스택 문자열)
+    # Slack 메시지가 지저분해지니 앞부분만 잘라서 보여줌 - 원인 파악엔 이 정도로 충분함.
+    if error_detail and len(error_detail) > 200:
+        error_detail = error_detail[:200] + "…"
+    detail_line = f"\n(오류 상세: `{error_detail}`)" if error_detail else ""
     post_bot_alert(
         f"`{name}` ({symbol}) 데이터를 못 가져왔어요. 월물 코드가 만기 지났거나, "
-        f"Yahoo Finance 쪽 문제일 수 있어요. 확인해주세요.",
+        f"Yahoo Finance 쪽 문제일 수 있어요. 확인해주세요.{detail_line}",
         title="⚠️ 진폭 데이터 누락",
         channel=TRADING_NOTIFY_CHANNEL_ID,
         fallback_webhook_env_var=WEBHOOK_ENV_VAR,

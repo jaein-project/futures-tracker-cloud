@@ -43,6 +43,22 @@
      HTS를 직접 보고 "월물이 언제 바뀌었는지" 알려줄 필요 없이 매 폴링마다
      스스로 확인/보정합니다. Yahoo 거래량 조회가 실패하면 안전하게 원래 날짜
      규칙 값을 그대로 씁니다.
+
+  5) **거래량 확인 호출 자체를 근처 구간에서만 실행 (2026-09-08 추가)**: 원래는
+     위 4)의 거래량 비교를 종목 상관없이 "매 5분 폴링마다, 항상" 실행했습니다.
+     그런데 이 비교 하나에 심볼당 최대 2번(현재월물 + 다음월물)씩 Yahoo Finance에
+     추가로 요청을 보내서, 7종목 x 최대 2단계 연쇄확인까지 겹치면 폴링 1번에
+     최대 28번의 "거래량 확인용" 요청이 추가로 나갑니다. 이 보정은 원래
+     "실제 롤오버가 날짜 규칙보다 며칠 일찍 일어나는" 경우만 잡아내면 되는
+     안전장치라서, 롤오버 예정일(_roll_trigger_date)에서 한참 떨어진 날(예:
+     구리/골드처럼 다음 롤오버까지 몇 달 남은 경우)에까지 매번 거래량을 확인할
+     필요가 없습니다. 2026-09-08 09:00 KST에 7종목이 전부 동시에 데이터를
+     못 가져온 사고 이후, 이 누적 요청량이 GitHub Actions IP에서 Yahoo Finance
+     쪽 레이트리밋/일시차단을 유발했을 가능성이 있다고 보고, 롤오버 예정일이
+     VOLUME_CHECK_WINDOW_DAYS일 이내로 가까워졌을 때만 거래량 확인을 실행하도록
+     제한했습니다 (그 밖의 날에는 날짜 규칙 값을 그대로 사용). 아직 이게
+     그 사고의 100% 확정된 원인은 아니지만, 어차피 불필요했던 호출을 줄이는
+     거라 안전한 개선입니다.
 """
 
 from datetime import date, timedelta
@@ -87,6 +103,12 @@ BASE_TICKER = {
 MULTIPLIER = {
     "엔화": 1000000,
 }
+
+# 2026-09-08 추가: 롤오버 예정일(_roll_trigger_date)이 이 일수 이내로 다가왔을 때만
+# 거래량 기반 자동 보정(_volume_corrected_month)을 실행함. 그 밖의 날(대부분의 날)에는
+# 이 안전장치가 어차피 개입할 상황이 아니므로 Yahoo Finance에 불필요한 추가 요청을
+# 보내지 않음. 과거 확인된 "며칠 일찍 롤오버" 사례들에 여유 있게 대응할 수 있는 값으로 설정.
+VOLUME_CHECK_WINDOW_DAYS = 15
 
 
 def _third_friday(year: int, month: int) -> date:
@@ -190,13 +212,20 @@ def get_symbol(name: str, today: date = None) -> str:
     예: get_symbol("나스닥") -> "MNQU26.CME"
 
     1) 날짜 규칙(third_friday_same_month / n_days_before_month_start)으로 일단 추정
-    2) 바로 다음 계약월과 거래량을 비교해서, 이미 시장이 다음 월물로 넘어갔으면 보정
-       (2026-08-26: 천연가스가 날짜 규칙보다 며칠 먼저 실제로 롤오버된 걸 발견하고 추가)
+    2) 롤오버 예정일이 VOLUME_CHECK_WINDOW_DAYS일 이내로 가까울 때만, 바로 다음
+       계약월과 거래량을 비교해서 이미 시장이 다음 월물로 넘어갔으면 보정
+       (2026-08-26: 천연가스가 날짜 규칙보다 며칠 먼저 실제로 롤오버된 걸 발견하고 추가.
+       2026-09-08: 매번 무조건 확인하던 것을, 불필요한 Yahoo Finance 요청을 줄이기 위해
+       롤오버 임박 구간에서만 확인하도록 제한 - docstring 5번 항목 참고)
     """
     rule = CONTRACT_RULES[name]
     base = BASE_TICKER[name]
+    if today is None:
+        today = date.today()
     y, m = current_contract_month(rule["cycle"], rule, today)
-    y, m = _volume_corrected_month(base, rule, y, m)
+    days_until_trigger = (_roll_trigger_date(y, m, rule) - today).days
+    if days_until_trigger <= VOLUME_CHECK_WINDOW_DAYS:
+        y, m = _volume_corrected_month(base, rule, y, m)
     return _symbol_str(base, rule["exchange"], y, m)
 
 

@@ -141,12 +141,34 @@ def _get_or_create_reminder_log_ws(spreadsheet):
         return ws
 
 
+# 2026-09-09 추가: is_reminder_sent()가 호출될 때마다 매번 ws.get_all_values()로 '알림기록' 탭
+# 전체를 새로 읽어오고 있었음. 이 함수는 build_row()에서 "데이터 누락 종목 1개"마다 한 번씩
+# 호출되는데, 9/8~9/9처럼 여러 체크포인트가 한꺼번에 밀려서 재시도되고(process_checkpoints의
+# LOOKBACK_DAYS 루프) 7종목이 전부 실패하는 상황이 겹치면, 폴링 1번 실행 안에서만 이 읽기가
+# 수십 번씩 발생함. 이게 쌓여서 2026-09-09 06:31 KST에 실제로 구글 시트 API의
+# "분당 읽기 요청" 무료 할당량(60회/분/사용자)을 초과해 429(RESOURCE_EXHAUSTED) 오류가
+# 발생한 것으로 확인됨 - 이번엔 Yahoo가 아니라 우리 코드가 구글 시트에 요청을 너무 많이
+# 보낸 게 원인. 같은 스크립트 실행(프로세스) 안에서는 '알림기록' 탭 내용이 어차피 우리가
+# 직접 쓴 것 외엔 안 바뀌므로, 이번 실행에서 이미 읽은 값을 캐시해뒀다가 재사용하고
+# (mark_reminder_sent가 새로 추가할 때만 캐시에도 같이 반영), 실행이 끝나면(다음 poll.yml
+# 스텝은 항상 새 프로세스로 시작하니) 캐시도 자연히 사라짐 - 매 폴링마다 최신 상태를
+# 못 보는 문제는 없음.
+_reminder_log_cache = None
+
+
+def _get_reminder_log_values(spreadsheet):
+    global _reminder_log_cache
+    if _reminder_log_cache is None:
+        ws = _get_or_create_reminder_log_ws(spreadsheet)
+        _reminder_log_cache = ws.get_all_values()
+    return _reminder_log_cache
+
+
 def is_reminder_sent(spreadsheet, date_str, label) -> bool:
     """순수 알림(경제발표 예고/전후비교/일일다이제스트 등, 진폭 시트에 값을 안 남기는 알림)이
-    이미 전송됐는지 확인 - '알림기록' 탭에서 조회"""
+    이미 전송됐는지 확인 - '알림기록' 탭에서 조회 (2026-09-09부터 이번 실행 안에서는 캐시 재사용)"""
     try:
-        ws = _get_or_create_reminder_log_ws(spreadsheet)
-        all_values = ws.get_all_values()
+        all_values = _get_reminder_log_values(spreadsheet)
         for row in all_values[1:]:
             if len(row) >= 2 and row[0] == date_str and row[1] == label:
                 return True
@@ -156,11 +178,16 @@ def is_reminder_sent(spreadsheet, date_str, label) -> bool:
 
 
 def mark_reminder_sent(spreadsheet, date_str, label):
-    """순수 알림을 보냈다는 사실을 '알림기록' 탭에 남겨서 다음 폴링에서 중복 전송되지 않게 함"""
+    """순수 알림을 보냈다는 사실을 '알림기록' 탭에 남겨서 다음 폴링에서 중복 전송되지 않게 함
+    (2026-09-09: 새로 추가한 행을 캐시에도 같이 반영해서, 같은 실행 안에서 바로 이어지는
+    is_reminder_sent 조회가 방금 추가한 내용을 즉시 반영해서 보도록 함)"""
+    global _reminder_log_cache
     try:
         ws = _get_or_create_reminder_log_ws(spreadsheet)
         now_str = datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
         ws.append_row([date_str, label, now_str], value_input_option="USER_ENTERED")
+        if _reminder_log_cache is not None:
+            _reminder_log_cache.append([date_str, label, now_str])
     except Exception as e:
         print(f"   ⚠️ 알림기록 시트 기록 오류: {e}")
 
