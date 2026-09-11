@@ -390,8 +390,13 @@ def check_duplicate_streak(all_values, new_row, spreadsheet, day_start, target_d
 
 def process_checkpoints(ws, now: datetime):
     sched = SUMMER_SCHEDULE if is_summer_time() else WINTER_SCHEDULE
+    # 2026-09-11 수정: ws.get_all_values() 직접 호출 대신 get_amplitude_values()로 캐싱해서
+    # 재사용 - 같은 실행 안에서 process_economic/process_post_comparison도 이 캐시를 같이
+    # 쓰기 때문에, 진폭 시트 전체를 다시 읽는 횟수 자체를 줄여 429 발생 빈도를 낮춤
+    # (근본 원인 대응 - 알림기록 캐싱과 같은 방식).
+    from google_sheet import get_amplitude_values
     try:
-        all_values = ws.get_all_values()
+        all_values = get_amplitude_values(ws)
     except Exception as e:
         print(f"   ⚠️ 시트 읽기 오류: {e}")
         return
@@ -661,8 +666,15 @@ def process_economic(ws, now: datetime):
                 ws.append_row(row, value_input_option="USER_ENTERED")
                 print(f"✅ 경제발표 기록 완료: {date_str} {note}")
                 from alerts import alert_economic_recorded
+                # 2026-09-11 수정: 방금 append한 행을 확인하려고 시트 전체를 다시 읽어오는 대신,
+                # 이번 실행의 캐시(get_amplitude_values)에 방금 쓴 행만 그대로 반영함
+                # (process_checkpoints의 all_values.append 패턴과 동일 - 원본 시트 형식대로
+                # A열 빈칸 하나를 앞에 붙여서 넣어야 인덱스가 맞음). 429 발생 빈도를 줄이기
+                # 위한 근본 원인 대응.
+                from google_sheet import get_amplitude_values
                 try:
-                    all_values = ws.get_all_values()
+                    all_values = get_amplitude_values(ws)
+                    all_values.append([""] + row)
                 except Exception as e:
                     print(f"   ⚠️ 비교용 시트 읽기 오류: {e}")
                     all_values = []
@@ -724,8 +736,11 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
     # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
     if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
+    # 2026-09-11 수정: 캐시(get_amplitude_values) 재사용 - 429 발생 빈도를 줄이기 위한
+    # 근본 원인 대응(알림기록 캐싱과 같은 방식).
+    from google_sheet import get_amplitude_values
     try:
-        all_values = ws.get_all_values()
+        all_values = get_amplitude_values(ws)
     except Exception as e:
         print(f"   ⚠️ 비교용 시트 읽기 오류: {e}")
         return

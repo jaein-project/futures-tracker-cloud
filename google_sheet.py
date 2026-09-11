@@ -117,15 +117,39 @@ def calc_ticks(name, high, low):
     return ""
 
 
+# 2026-09-11 추가: '진폭' 시트(체크포인트/경제발표가 같이 쓰는 메인 시트) 전체 값도
+# 한 번의 poll 실행 안에서 process_checkpoints/is_duplicate/process_post_comparison 등
+# 여러 곳이 각자 따로 ws.get_all_values()로 다시 읽고 있었음. '알림기록' 탭을 캐싱한 것과
+# 같은 이유(429 유발) - 특히 is_duplicate()는 경제발표 이벤트마다(전/후 각각) 그 시각이
+# 지난 뒤로는 매 폴링(5분마다)마다 하루 종일 반복 호출되는데, 그때마다 계속 커지는 진폭
+# 시트 전체를 새로 읽어오고 있어서 실질적인 429 유발 요인 중 가장 컸을 것으로 판단됨.
+# 알림기록 캐시와 동일하게, 이번 실행에서 이미 읽은 값을 재사용하고 우리가 새로 append한
+# 행만 캐시 리스트 자체에 직접 반영함(process_checkpoints가 이미 하던 all_values.append와
+# 동일한 패턴 - 반환값이 같은 리스트 객체라 그 안에서 append하면 캐시도 자동으로 갱신됨).
+_amplitude_cache = None
+
+
+def get_amplitude_values(ws):
+    """진폭 시트 전체 값을 이번 실행 안에서 캐싱해서 재사용 (429 방지, 2026-09-11).
+    반환된 리스트는 캐시 원본 그 자체이므로, 새로 기록한 행을 여기에 append하면
+    캐시도 함께 갱신됨(알림기록 캐시와 동일한 방식)."""
+    global _amplitude_cache
+    if _amplitude_cache is None:
+        _amplitude_cache = ws.get_all_values()
+    return _amplitude_cache
+
+
 def is_duplicate(ws, date_str, note):
     """같은 날짜+비고가 이미 있는지 확인 (중복 방지)
     반환값: True(이미 있음) / False(없음, 확인 완료) / None(확인 불가 - 429 등 오류)
     2026-09-11 수정: 기존엔 조회 실패를 그냥 '없음'(False)으로 취급해서, 구글 시트 API가
     429 등으로 잠깐 막히면 호출부가 그대로 진행해 진폭 시트에 중복 행을 기록할 위험이
     있었음. 이제 확인 자체가 안 되면 None을 반환해서, 호출부가 이번 폴링에서는 기록을
-    보류하고 다음 폴링(5분 뒤)에서 다시 확인하도록 함."""
+    보류하고 다음 폴링(5분 뒤)에서 다시 확인하도록 함.
+    2026-09-11 추가 수정: get_amplitude_values()로 캐싱해서 같은 실행 안에서는 재조회하지
+    않도록 함(429 발생 빈도 자체를 줄이기 위함 - 근본 원인 대응)."""
     try:
-        all_values = ws.get_all_values()
+        all_values = get_amplitude_values(ws)
     except Exception as e:
         print(f"   ⚠️ 진폭 시트 중복확인 오류(확인불가로 처리 - 이번엔 기록 보류): {e}")
         return None
