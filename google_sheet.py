@@ -118,16 +118,22 @@ def calc_ticks(name, high, low):
 
 
 def is_duplicate(ws, date_str, note):
-    """같은 날짜+비고가 이미 있는지 확인 (중복 방지)"""
+    """같은 날짜+비고가 이미 있는지 확인 (중복 방지)
+    반환값: True(이미 있음) / False(없음, 확인 완료) / None(확인 불가 - 429 등 오류)
+    2026-09-11 수정: 기존엔 조회 실패를 그냥 '없음'(False)으로 취급해서, 구글 시트 API가
+    429 등으로 잠깐 막히면 호출부가 그대로 진행해 진폭 시트에 중복 행을 기록할 위험이
+    있었음. 이제 확인 자체가 안 되면 None을 반환해서, 호출부가 이번 폴링에서는 기록을
+    보류하고 다음 폴링(5분 뒤)에서 다시 확인하도록 함."""
     try:
         all_values = ws.get_all_values()
-        for row in all_values[2:]:  # 헤더 건너뜀
-            if len(row) >= 11:
-                # B열=날짜(index 1), K열=비고(index 10)
-                if row[1] == date_str and row[10] == note:
-                    return True
-    except:
-        pass
+    except Exception as e:
+        print(f"   ⚠️ 진폭 시트 중복확인 오류(확인불가로 처리 - 이번엔 기록 보류): {e}")
+        return None
+    for row in all_values[2:]:  # 헤더 건너뜀
+        if len(row) >= 11:
+            # B열=날짜(index 1), K열=비고(index 10)
+            if row[1] == date_str and row[10] == note:
+                return True
     return False
 
 
@@ -164,32 +170,57 @@ def _get_reminder_log_values(spreadsheet):
     return _reminder_log_cache
 
 
-def is_reminder_sent(spreadsheet, date_str, label) -> bool:
-    """순수 알림(경제발표 예고/전후비교/일일다이제스트 등, 진폭 시트에 값을 안 남기는 알림)이
-    이미 전송됐는지 확인 - '알림기록' 탭에서 조회 (2026-09-09부터 이번 실행 안에서는 캐시 재사용)"""
+def is_reminder_sent(spreadsheet, date_str, label):
+    """순수 알림(경제발표 예고/전후비교/일일다이제스트/조기종료·완전휴장 안내/데이터누락 등,
+    진폭 시트에 값을 안 남기는 알림)이 이미 전송됐는지 확인 - '알림기록' 탭에서 조회
+    (2026-09-09부터 이번 실행 안에서는 캐시 재사용)
+
+    반환값: True(이미 발송됨) / False(발송 안 됨, 확인 완료) / None(확인 불가 - 429 등 오류)
+    2026-09-11 수정 (9/9~9/10 조기종료 안내·데이터 누락 알림 반복발송 사고 원인 수정):
+    기존엔 확인 자체가 실패해도(429 등) 그냥 False(=아직 안 보냄)를 반환했음. 그러면
+    호출부가 "안 보냈네" 하고 다시 발송하고, 뒤이은 mark_reminder_sent()도 같은 429
+    상황이면 조용히 실패해서 "보냈다"는 기록 자체가 안 남아 다음 폴링에서 또 반복되는
+    무한루프가 생겼었음(실제 9/9 06:31 KST 429 발생 후 확인됨). 이제 확인이 안 되면
+    None을 반환하고, 호출부(gh_actions_poll.py)가 이번 폴링에서는 알림을 보내지 않고
+    다음 폴링(5분 뒤, 대개 그때는 분당 할당량이 리셋됨)에서 다시 확인하도록 변경함 -
+    알림이 최대 5분 정도 늦어질 수는 있어도, 폭탄처럼 반복되지는 않음."""
     try:
         all_values = _get_reminder_log_values(spreadsheet)
-        for row in all_values[1:]:
-            if len(row) >= 2 and row[0] == date_str and row[1] == label:
-                return True
     except Exception as e:
-        print(f"   ⚠️ 알림기록 시트 확인 오류: {e}")
+        print(f"   ⚠️ 알림기록 시트 확인 오류(확인불가로 처리 - 이번엔 발송 보류): {e}")
+        return None
+    for row in all_values[1:]:
+        if len(row) >= 2 and row[0] == date_str and row[1] == label:
+            return True
     return False
 
 
 def mark_reminder_sent(spreadsheet, date_str, label):
     """순수 알림을 보냈다는 사실을 '알림기록' 탭에 남겨서 다음 폴링에서 중복 전송되지 않게 함
     (2026-09-09: 새로 추가한 행을 캐시에도 같이 반영해서, 같은 실행 안에서 바로 이어지는
-    is_reminder_sent 조회가 방금 추가한 내용을 즉시 반영해서 보도록 함)"""
+    is_reminder_sent 조회가 방금 추가한 내용을 즉시 반영해서 보도록 함)
+
+    2026-09-11 추가: 쓰기가 실패하면(429 등) 짧게 한 번 더 재시도함. "Slack은 보냈는데
+    이 기록만 실패해서 다음 폴링에서 또 보내는" 그 좁은 시간 창을 완전히 없애지는 못하지만
+    (구글 API 분당 할당량은 대개 1분 이내에 풀리므로) 실제로 반복될 확률을 크게 줄여줌.
+    그래도 최종 실패하면 로그에 분명하게 남기고 넘어감(다음 폴링에서 최악의 경우 1회
+    중복 발송될 수 있음 - 이전의 '계속' 반복되던 것보다는 훨씬 안전한 상태)."""
     global _reminder_log_cache
-    try:
-        ws = _get_or_create_reminder_log_ws(spreadsheet)
-        now_str = datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
-        ws.append_row([date_str, label, now_str], value_input_option="USER_ENTERED")
-        if _reminder_log_cache is not None:
-            _reminder_log_cache.append([date_str, label, now_str])
-    except Exception as e:
-        print(f"   ⚠️ 알림기록 시트 기록 오류: {e}")
+    ws = None
+    for attempt in range(2):
+        try:
+            if ws is None:
+                ws = _get_or_create_reminder_log_ws(spreadsheet)
+            now_str = datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
+            ws.append_row([date_str, label, now_str], value_input_option="USER_ENTERED")
+            if _reminder_log_cache is not None:
+                _reminder_log_cache.append([date_str, label, now_str])
+            return
+        except Exception as e:
+            print(f"   ⚠️ 알림기록 시트 기록 오류 ({attempt + 1}/2): {e}")
+            if attempt == 0:
+                _time.sleep(3)
+    print(f"   ❌ 알림기록 기록 최종 실패 - {date_str} {label} (다음 폴링에서 중복 발송될 수 있음)")
 
 
 def _get_or_create_daily_summary_ws(spreadsheet):

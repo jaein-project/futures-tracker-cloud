@@ -212,8 +212,14 @@ def build_row(day_start: datetime, target_dt: datetime, date_str: str, time_str:
             if spreadsheet is not None:
                 from google_sheet import is_reminder_sent, mark_reminder_sent
                 label = f"symbol_missing_{name}"
-                if is_reminder_sent(spreadsheet, date_str, label):
+                # 2026-09-11 수정: is_reminder_sent가 확인 자체를 못 하면(429 등) None을 반환함 -
+                # 이걸 '미발송'(False)으로 오판해서 계속 재발송하던 게 9/9~9/10 알림 폭탄의
+                # 실제 원인이었음. True(이미 보냄)/None(확인불가) 둘 다 이번엔 보내지 않음.
+                sent = is_reminder_sent(spreadsheet, date_str, label)
+                if sent is True:
                     print(f"   ℹ️ [{name}] 오늘 이미 데이터 누락 알림을 보냈어서 재알림 생략 (알림 폭탄 방지)")
+                elif sent is None:
+                    print(f"   ℹ️ [{name}] 알림기록 확인 불가(429 등) - 이번엔 알림 보류, 다음 폴링에서 재확인")
                 else:
                     alert_symbol_missing(name, symbol, error_detail=error_detail)
                     mark_reminder_sent(spreadsheet, date_str, label)
@@ -438,7 +444,10 @@ def process_checkpoints(ws, now: datetime):
                 from alerts import alert_unexpected_no_trading
                 spreadsheet = ws.spreadsheet
                 label = f"{timing}_전종목무변동"
-                if not is_reminder_sent(spreadsheet, date_str, label):
+                # 2026-09-11 수정: 기존 `not is_reminder_sent(...)`는 None(확인불가)도
+                # True로 취급해버려서(파이썬에서 `not None`은 True) 429 상황에서 계속
+                # 재발송되는 버그가 있었음 - False로 명확히 확인됐을 때만 진행하도록 수정.
+                if is_reminder_sent(spreadsheet, date_str, label) is False:
                     alert_unexpected_no_trading(date_str, timing)
                     mark_reminder_sent(spreadsheet, date_str, label)
                 continue
@@ -544,7 +553,9 @@ def process_full_holiday_today(ws, date_str: str, holiday_name: str):
     from alerts import alert_full_holiday_today
     spreadsheet = ws.spreadsheet
     label = "완전휴장_당일안내"
-    if is_reminder_sent(spreadsheet, date_str, label):
+    # 2026-09-11 수정: is_reminder_sent가 확인불가(429 등)로 None을 반환할 수 있음 -
+    # True(이미 보냄)/None(확인불가) 모두 이번엔 보내지 않고 넘어감(False일 때만 진행)
+    if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
     alert_full_holiday_today(date_str, holiday_name)
     mark_reminder_sent(spreadsheet, date_str, label)
@@ -558,7 +569,8 @@ def process_full_holiday_tomorrow(ws, tomorrow: _date, holiday_name: str):
     tomorrow_str = f"{tomorrow.year}. {tomorrow.month}. {tomorrow.day}"
     spreadsheet = ws.spreadsheet
     label = "완전휴장_전날예고"
-    if is_reminder_sent(spreadsheet, tomorrow_str, label):
+    # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+    if is_reminder_sent(spreadsheet, tomorrow_str, label) is not False:
         return
     alert_full_holiday_tomorrow(tomorrow_str, holiday_name)
     mark_reminder_sent(spreadsheet, tomorrow_str, label)
@@ -571,7 +583,9 @@ def process_early_close_today(ws, date_str: str, info: dict):
     from alerts import alert_early_close_today
     spreadsheet = ws.spreadsheet
     label = "조기종료_당일안내"
-    if is_reminder_sent(spreadsheet, date_str, label):
+    # 2026-09-11 수정 (9/9~9/10 조기종료 안내 반복발송 사고 원인): True(이미 보냄)/
+    # None(429 등으로 확인불가) 모두 보내지 않음 (False로 명확히 확인됐을 때만 진행)
+    if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
     alert_early_close_today(date_str, info["name"], info["detail"])
     mark_reminder_sent(spreadsheet, date_str, label)
@@ -585,7 +599,8 @@ def process_early_close_tomorrow(ws, tomorrow: _date, info: dict):
     tomorrow_str = f"{tomorrow.year}. {tomorrow.month}. {tomorrow.day}"
     spreadsheet = ws.spreadsheet
     label = "조기종료_전날예고"
-    if is_reminder_sent(spreadsheet, tomorrow_str, label):
+    # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+    if is_reminder_sent(spreadsheet, tomorrow_str, label) is not False:
         return
     alert_early_close_tomorrow(tomorrow_str, info["name"], info["detail"])
     mark_reminder_sent(spreadsheet, tomorrow_str, label)
@@ -603,7 +618,8 @@ def process_holiday_calendar_reminder(spreadsheet, now: datetime):
         return
     date_str = f"{now.year}. {now.month}. {now.day}"
     label = f"휴장일캘린더리마인더_{tier}"
-    if is_reminder_sent(spreadsheet, date_str, label):
+    # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+    if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
     alert_holiday_calendar_reminder(tier)
     mark_reminder_sent(spreadsheet, date_str, label)
@@ -628,7 +644,14 @@ def process_economic(ws, now: datetime):
         for target_dt, note in [(g["before_dt"], g["label_pre"]), (g["after_dt"], g["label_post"])]:
             if now < target_dt:
                 continue
-            if is_duplicate(ws, date_str, note):
+            # 2026-09-11 수정: is_duplicate가 확인불가(429 등)로 None을 반환할 수 있음 -
+            # True(이미 기록됨)/None(확인불가) 모두 이번엔 기록하지 않고 다음 폴링에서 재시도
+            # (확인 없이 진행하면 진폭 시트에 중복 행이 생길 위험이 있어서 안전한 쪽으로 보류).
+            dup = is_duplicate(ws, date_str, note)
+            if dup is None:
+                print(f"   ⏭️ [{note}] 중복확인 불가(429 등) - 이번엔 기록 보류, 다음 폴링에서 재시도")
+                continue
+            if dup:
                 continue
             print(f"📌 경제발표 기록 시도: {date_str} {note}")
             day_start = trading_day_start(target_dt)
@@ -681,7 +704,8 @@ def process_reminder_tiers(ws, now: datetime, g: dict, date_str: str):
         if now < tier_dt or now >= event_dt:
             continue  # 아직 그 시점이 안 됐거나, 발표가 이미 지나버려서 예고가 의미 없어짐
         label = f"{g['label_pre']}_{tier_label}예고"
-        if is_reminder_sent(spreadsheet, date_str, label):
+        # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+        if is_reminder_sent(spreadsheet, date_str, label) is not False:
             continue
         alert_reminder_tier(date_str, tier_label, g["names"], g["time"])
         mark_reminder_sent(spreadsheet, date_str, label)
@@ -697,7 +721,8 @@ def process_post_comparison(ws, now: datetime, g: dict, date_str: str):
         return
     label = f"{g['label_pre']}_20분후비교"
     spreadsheet = ws.spreadsheet
-    if is_reminder_sent(spreadsheet, date_str, label):
+    # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+    if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
     try:
         all_values = ws.get_all_values()
@@ -744,7 +769,8 @@ def process_daily_digest(ws, now: datetime):
     date_str = f"{today.year}. {today.month}. {today.day}"
     label = "일일경제발표다이제스트"
     spreadsheet = ws.spreadsheet
-    if is_reminder_sent(spreadsheet, date_str, label):
+    # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+    if is_reminder_sent(spreadsheet, date_str, label) is not False:
         return
     events = fetch_today_events_all()
     if not events:
@@ -796,7 +822,8 @@ def check_rollover_alerts(ws, now: datetime):
         if old_symbol == new_symbol:
             continue
         label = f"월물롤오버_{name}"
-        if is_reminder_sent(spreadsheet, today_str, label):
+        # 2026-09-11 수정: True(이미 보냄)/None(확인불가) 모두 보내지 않음 (False일 때만 진행)
+        if is_reminder_sent(spreadsheet, today_str, label) is not False:
             continue
         print(f"🔄 [{name}] 월물 자동 롤오버 감지: {old_symbol} → {new_symbol}")
         result = alert_symbol_rolled(name, old_symbol, new_symbol)
