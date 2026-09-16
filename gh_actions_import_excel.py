@@ -31,6 +31,22 @@ QUARTER_TO_MONTH = {"1분기": "3월", "2분기": "6월", "3분기": "9월", "4�
 COUNTRY_ALLOWLIST = {"미국", "유로존", "유로 지역"}
 COUNTRY_DISPLAY = {"유로 지역": "유로존"}
 
+# 2026-09-16 추가 (재인님 리포트 - 경제발표 시트가 1155행에서 그리드 한계에 부딪혀
+# 업로드 374건 중 120건만 기록되고 나머지 254건이 유실된 채 스크립트 자체가 죽어버린 사고):
+# ws.update()는 대상 범위가 시트의 현재 행/열 한계 밖이면 그냥 에러를 던지고, 구글시트는
+# append처럼 알아서 행을 늘려주지 않음. 그래서 쓰기 전에 필요한 행 수를 미리 계산해서
+# 부족하면 add_rows()로 먼저 늘려놓는다. 다음번에도 여유가 남도록 여분(ROW_BUFFER)도 같이 늘림.
+ROW_BUFFER = 200
+
+
+def _ensure_enough_rows(ws, needed_last_row: int):
+    """시트의 실제 행 수(ws.row_count)가 needed_last_row보다 작으면 자동으로 늘린다."""
+    if ws.row_count < needed_last_row:
+        rows_to_add = (needed_last_row - ws.row_count) + ROW_BUFFER
+        print(f"   📐 시트 행 부족 감지 (현재 {ws.row_count}행, 필요 {needed_last_row}행) "
+        f"→ {rows_to_add}행 추가") 
+        ws.add_rows(rows_to_add)
+
 
 def _normalize_country(raw: str) -> str:
     raw = (raw or "").strip()
@@ -256,6 +272,9 @@ def main():
     next_row = len(existing) + 1
     print(f"   📍 다음 빈 행 계산: 현재 마지막 데이터 행={len(existing)} → {next_row}행부터 씀")
 
+    # 2026-09-16 추가: 쓰기 전에 필요한 총 행 수까지 시트가 확보돼 있는지 확인 (부족하면 자동으로 늘림)
+    last_needed_row = next_row + len(new_rows) - 1
+    _ensure_enough_rows(ws, last_needed_row)
     batch_size = 20
     added = 0
     for i in range(0, len(new_rows), batch_size):
