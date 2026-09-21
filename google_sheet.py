@@ -510,6 +510,15 @@ def mark_workflow_error_resolved(spreadsheet, row_idx, status="완료-복구"):
         print(f"   ⚠️ 워크플로우_오류_추적 상태 갱신 오류: {e}")
 
 
+def _col_letter(n: int) -> str:
+    """1-indexed 열 번호를 A1 표기 열 문자로 변환 (1→A, 27→AA 등)."""
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
 def _get_or_create_economic_comparison_ws(spreadsheet):
     """'경제발표_AGG' 탭이 없으면 새로 만들어서 반환 (2026-09-05 신설).
     슬랙 메시지와 동일한 가로형 구조: 날짜/발표시각/발표명 + 종목별 전/후/증감 3열씩."""
@@ -531,9 +540,12 @@ def append_economic_comparison(spreadsheet, date_str, event_time, name_str, befo
     똑같은 인덱싱으로 종목별 전/후/증감을 뽑아 '경제발표_AGG' 탭에 영구 기록
     (2026-09-05 신규, 재인님 요청 - Slack 알림은 순수 알림이라 3개월 후 사라지므로).
     before_row: ws.get_all_values()로 읽은 '전(-5분)' 원본 시트 행 (A열 빈칸 → 인덱스 1칸 밀림)
-    after_row : build_row()로 만든 '후(+20분)' 로컬 행 (밀림 없음)"""
+    after_row : build_row()로 만든 '후(+20분)' 로컬 행 (밀림 없음)
+    2026-09-21 수정 (재인님 리포트): '_증감' 열이 계산된 숫자로 박제되어 시트에서 수식으로
+    안 보이던 문제 - 이제 =(후)-(전) 수식 문자열로 기록해서 시트에서도 실제 수식으로 남도록 함."""
     try:
         ws = _get_or_create_economic_comparison_ws(spreadsheet)
+        next_row = len(ws.get_all_values()) + 1
         row = [date_str, event_time, name_str]
         for idx, name in enumerate(SYMBOL_ORDER):
             before_val = before_row[3 + idx] if len(before_row) > 3 + idx else ""
@@ -543,7 +555,9 @@ def append_economic_comparison(spreadsheet, date_str, event_time, name_str, befo
                 continue
             try:
                 b, a = int(before_val), int(after_val)
-                row += [b, a, a - b]
+                before_col = _col_letter(4 + idx * 3)
+                after_col = _col_letter(5 + idx * 3)
+                row += [b, a, f"={after_col}{next_row}-{before_col}{next_row}"]
             except (ValueError, TypeError):
                 row += [before_val, after_val, ""]
         ws.append_row(row, value_input_option="USER_ENTERED")
